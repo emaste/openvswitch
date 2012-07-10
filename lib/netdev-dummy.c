@@ -316,6 +316,10 @@ static const struct netdev_class dummy_class = {
     netdev_dummy_listen,
     netdev_dummy_recv,
     netdev_dummy_recv_wait,
+#ifdef THREADED
+    NULL,                       /* dispatch */
+    NULL,                       /* get_fd */
+#endif
     netdev_dummy_drain,
 
     NULL,                       /* send */

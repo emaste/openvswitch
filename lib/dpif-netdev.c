@@ -32,6 +32,15 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
+#ifdef THREADED
+#include <signal.h>
+#include <pthread.h>
+
+#include "socket-util.h"
+#include "fatal-signal.h"
+#include "dispatch.h"
+#endif
+
 #include "csum.h"
 #include "dpif.h"
 #include "dpif-provider.h"
@@ -55,6 +64,16 @@
 #include "vlog.h"
 
 VLOG_DEFINE_THIS_MODULE(dpif_netdev);
+/* We could use these macros instead of using #ifdef and #endif every time we
+ * need to call the pthread_mutex_lock/unlock.
+#ifdef THREADED
+#define LOCK(mutex) pthread_mutex_lock(mutex)
+#define UNLOCK(mutex) pthread_mutex_unlock(mutex)
+#else
+#define LOCK(mutex)
+#define UNLOCK(mutex)
+#endif
+*/
 
 /* Configuration parameters. */
 enum { MAX_PORTS = 256 };       /* Maximum number of ports. */
@@ -82,6 +101,20 @@ struct dp_netdev {
     int open_cnt;
     bool destroyed;
 
+#ifdef THREADED
+    /* The pipe is used to signal the presence of a packet on the queue.
+     * - dpif_netdev_recv_wait() waits on p[0]
+     * - dpif_netdev_recv() extract from queue and read p[0]
+     * - dp_netdev_output_control() send to queue and write p[1]
+     */
+
+    /* The access to this queue is protected by the table_mutex mutex */
+    int pipe[2];    /* signal a packet on the queue */
+
+    pthread_mutex_t table_mutex;    /* mutex for the flow table */
+    pthread_mutex_t port_list_mutex;    /* port list mutex */
+#endif
+
     struct dp_netdev_queue queues[N_QUEUES];
     struct hmap flow_table;     /* Flow table. */
 
@@ -102,6 +135,9 @@ struct dp_netdev_port {
     struct list node;           /* Element in dp_netdev's 'port_list'. */
     struct netdev *netdev;
     char *type;                 /* Port type as requested by user. */
+#ifdef THREADED
+    struct pollfd *poll_fd;     /* To manage the poll loop in the thread. */
+#endif
 };
 
 /* A flow in dp_netdev's 'flow_table'. */
@@ -126,6 +162,11 @@ struct dpif_netdev {
     struct dp_netdev *dp;
     unsigned int dp_serial;
 };
+
+#ifdef THREADED
+/* XXX global Descriptor of the thread that manages the datapaths. */
+pthread_t thread_p;
+#endif
 
 /* All netdev-based datapaths. */
 static struct shash dp_netdevs = SHASH_INITIALIZER(&dp_netdevs);
@@ -204,6 +245,20 @@ create_dp_netdev(const char *name, const struct dpif_class *class,
     dp->class = class;
     dp->name = xstrdup(name);
     dp->open_cnt = 0;
+#ifdef THREADED
+    error = pipe(dp->pipe);
+    if (error) {
+        fprintf(stderr, "pipe creation error\n");
+        return errno;
+    }
+    if (set_nonblocking(dp->pipe[0]) || set_nonblocking(dp->pipe[1])) {
+        fprintf(stderr, "error set_nonblock on pipe\n");
+        return errno;
+    }
+
+    pthread_mutex_init(&dp->table_mutex, NULL);
+    pthread_mutex_init(&dp->port_list_mutex, NULL);
+#endif
     for (i = 0; i < N_QUEUES; i++) {
         dp->queues[i].head = dp->queues[i].tail = 0;
     }
@@ -273,11 +328,23 @@ dp_netdev_free(struct dp_netdev *dp)
     struct dp_netdev_port *port, *next;
 
     dp_netdev_flow_flush(dp);
+#ifdef THREADED
+    pthread_mutex_lock(&dp->port_list_mutex);
+#endif
     LIST_FOR_EACH_SAFE (port, next, node, &dp->port_list) {
         do_del_port(dp, port->port_no);
     }
+#ifdef THREADED
+    pthread_mutex_unlock(&dp->port_list_mutex);
+    pthread_mutex_lock(&dp->table_mutex);
+#endif
     dp_netdev_purge_queues(dp);
     hmap_destroy(&dp->flow_table);
+#ifdef THREADED
+    pthread_mutex_unlock(&dp->table_mutex);
+    pthread_mutex_destroy(&dp->table_mutex);
+    pthread_mutex_destroy(&dp->port_list_mutex);
+#endif
     free(dp->name);
     free(dp);
 }
@@ -306,7 +373,13 @@ static int
 dpif_netdev_get_stats(const struct dpif *dpif, struct dpif_dp_stats *stats)
 {
     struct dp_netdev *dp = get_dp_netdev(dpif);
+#ifdef THREADED
+    pthread_mutex_lock(&dp->table_mutex);
+#endif
     stats->n_flows = hmap_count(&dp->flow_table);
+#ifdef THREADED
+    pthread_mutex_unlock(&dp->table_mutex);
+#endif
     stats->n_hit = dp->n_hit;
     stats->n_missed = dp->n_missed;
     stats->n_lost = dp->n_lost;
@@ -354,13 +427,21 @@ do_add_port(struct dp_netdev *dp, const char *devname, const char *type,
     port->port_no = port_no;
     port->netdev = netdev;
     port->type = xstrdup(type);
+#ifdef THREADED
+    port->poll_fd = NULL;
+#endif
 
     error = netdev_get_mtu(netdev, &mtu);
     if (!error) {
         max_mtu = mtu;
     }
-
+#ifdef THREADED
+    pthread_mutex_lock(&dp->port_list_mutex);
+#endif
     list_push_back(&dp->port_list, &port->node);
+#ifdef THREADED
+    pthread_mutex_unlock(&dp->port_list_mutex);
+#endif
     dp->ports[port_no] = port;
     dp->serial++;
 
@@ -457,12 +538,21 @@ get_port_by_name(struct dp_netdev *dp,
 {
     struct dp_netdev_port *port;
 
+#ifdef THREADED
+    pthread_mutex_lock(&dp->port_list_mutex);
+#endif
     LIST_FOR_EACH (port, node, &dp->port_list) {
         if (!strcmp(netdev_get_name(port->netdev), devname)) {
             *portp = port;
+#ifdef THREADED
+            pthread_mutex_unlock(&dp->port_list_mutex);
+#endif
             return 0;
         }
     }
+#ifdef THREADED
+    pthread_mutex_unlock(&dp->port_list_mutex);
+#endif
     return ENOENT;
 }
 
@@ -473,6 +563,7 @@ do_del_port(struct dp_netdev *dp, uint16_t port_no)
     char *name;
     int error;
 
+    /* XXX why no semaphores?? */
     error = get_port_by_number(dp, port_no, &port);
     if (error) {
         return error;
@@ -540,7 +631,13 @@ dpif_netdev_get_max_ports(const struct dpif *dpif OVS_UNUSED)
 static void
 dp_netdev_free_flow(struct dp_netdev *dp, struct dp_netdev_flow *flow)
 {
+#ifdef THREADED
+    pthread_mutex_lock(&dp->table_mutex);
+#endif
     hmap_remove(&dp->flow_table, &flow->node);
+#ifdef THREADED
+    pthread_mutex_unlock(&dp->table_mutex);
+#endif
     free(flow->actions);
     free(flow);
 }
@@ -629,15 +726,24 @@ dpif_netdev_port_poll_wait(const struct dpif *dpif_)
 }
 
 static struct dp_netdev_flow *
-dp_netdev_lookup_flow(const struct dp_netdev *dp, const struct flow *key)
+dp_netdev_lookup_flow(struct dp_netdev *dp, const struct flow *key)
 {
     struct dp_netdev_flow *flow;
 
+#ifdef THREADED
+    pthread_mutex_lock(&dp->table_mutex);
+#endif
     HMAP_FOR_EACH_WITH_HASH (flow, node, flow_hash(key, 0), &dp->flow_table) {
         if (flow_equal(&flow->key, key)) {
+#ifdef THREADED
+            pthread_mutex_unlock(&dp->table_mutex);
+#endif
             return flow;
         }
     }
+#ifdef THREADED
+    pthread_mutex_unlock(&dp->table_mutex);
+#endif
     return NULL;
 }
 
@@ -737,7 +843,13 @@ dp_netdev_flow_add(struct dp_netdev *dp, const struct flow *key,
         return error;
     }
 
+#ifdef THREADED
+    pthread_mutex_lock(&dp->table_mutex);
+#endif
     hmap_insert(&dp->flow_table, &flow->node, flow_hash(&flow->key, 0));
+#ifdef THREADED
+    pthread_mutex_unlock(&dp->table_mutex);
+#endif
     return 0;
 }
 
@@ -757,6 +869,7 @@ dpif_netdev_flow_put(struct dpif *dpif, const struct dpif_flow_put *put)
     struct dp_netdev_flow *flow;
     struct flow key;
     int error;
+    int n_flows;
 
     error = dpif_netdev_flow_from_nlattrs(put->key, put->key_len, &key);
     if (error) {
@@ -766,7 +879,14 @@ dpif_netdev_flow_put(struct dpif *dpif, const struct dpif_flow_put *put)
     flow = dp_netdev_lookup_flow(dp, &key);
     if (!flow) {
         if (put->flags & DPIF_FP_CREATE) {
-            if (hmap_count(&dp->flow_table) < MAX_FLOWS) {
+#ifdef THREADED
+            pthread_mutex_lock(&dp->table_mutex);
+#endif
+            n_flows = hmap_count(&dp->flow_table);
+#ifdef THREADED
+            pthread_mutex_unlock(&dp->table_mutex);
+#endif
+            if (n_flows < MAX_FLOWS) {
                 if (put->stats) {
                     memset(put->stats, 0, sizeof *put->stats);
                 }
@@ -958,7 +1078,13 @@ static int
 dpif_netdev_recv(struct dpif *dpif, struct dpif_upcall *upcall,
                  struct ofpbuf *buf)
 {
-    struct dp_netdev_queue *q = find_nonempty_queue(dpif);
+    struct dp_netdev_queue *q;
+#ifdef THREADED
+    struct dp_netdev *dp = get_dp_netdev(dpif);
+    char c;
+    pthread_mutex_lock(&dp->table_mutex);
+#endif
+    q = find_nonempty_queue(dpif);
     if (q) {
         struct dpif_upcall *u = q->upcalls[q->tail++ & QUEUE_MASK];
         *upcall = *u;
@@ -967,8 +1093,19 @@ dpif_netdev_recv(struct dpif *dpif, struct dpif_upcall *upcall,
         ofpbuf_uninit(buf);
         *buf = *upcall->packet;
 
+#ifdef THREADED
+        /* Read a byte from the pipe to signal that a packet has been
+         * received. */
+        if (read(dp->pipe[0], &c, 1) < 0) {
+            printf("Error reading from the pipe\n");
+        }
+        pthread_mutex_unlock(&dp->table_mutex);
+#endif
         return 0;
     } else {
+#ifdef THREADED
+        pthread_mutex_unlock(&dp->table_mutex);
+#endif
         return EAGAIN;
     }
 }
@@ -976,12 +1113,18 @@ dpif_netdev_recv(struct dpif *dpif, struct dpif_upcall *upcall,
 static void
 dpif_netdev_recv_wait(struct dpif *dpif)
 {
+#ifdef THREADED
+    struct dp_netdev *dp = get_dp_netdev(dpif);
+
+    poll_fd_wait(dp->pipe[0], POLLIN);
+#else
     if (find_nonempty_queue(dpif)) {
         poll_immediate_wake();
     } else {
         /* No messages ready to be received, and dp_wait() will ensure that we
          * wake up to queue new messages, so there is nothing to do. */
     }
+#endif
 }
 
 static void
@@ -1052,6 +1195,7 @@ dpif_netdev_run(struct dpif *dpif)
     ofpbuf_uninit(&packet);
 }
 
+/* This function is no longer called in the threaded version. */
 static void
 dpif_netdev_wait(struct dpif *dpif)
 {
@@ -1062,6 +1206,141 @@ dpif_netdev_wait(struct dpif *dpif)
         netdev_recv_wait(port->netdev);
     }
 }
+
+#ifdef THREADED
+/*
+ * pcap callback argument
+ */
+struct dispatch_arg {
+    struct dp_netdev *dp;   /* update statistics */
+    struct dp_netdev_port *port;    /* argument to flow identifier function */
+    struct ofpbuf buf;      /* used to process the packet */
+};
+
+/* Process a packet.
+ *
+ * The port_input function will send immediately if it finds a flow match and
+ * the associated action is ODPAT_OUTPUT or ODPAT_OUTPUT_GROUP.
+ * If a flow is not found or for the other actions, the packet is copied.
+ */
+static void
+process_pkt(u_char *arg_p, const struct pkthdr *hdr, const u_char *packet)
+{
+    struct dispatch_arg *arg = (struct dispatch_arg *)arg_p;
+    struct ofpbuf *buf = &arg->buf;
+
+    /* set packet size and data pointer */
+    buf->size = hdr->caplen; /* XXX Must the size be equal to hdr->len or
+                              * hdr->caplen */
+    buf->data = (void*)packet;
+
+    dp_netdev_port_input(arg->dp, arg->port, buf);
+
+    return;
+}
+
+/* Body of the thread that manages the datapaths */
+static void*
+dp_thread_body(void *args OVS_UNUSED)
+{
+    struct dp_netdev *dp;
+    struct dp_netdev_port *port;
+    struct dispatch_arg arg;
+    int error;
+    int n_fds;
+    uint32_t batch = 50; /* max number of pkts processed by the dispatch */
+    int processed;     /* actual number of pkts processed by the dispatch */
+
+    sigset_t sigmask;
+
+    /*XXX Since the poll involves all ports of all datapaths, the right fds
+     * size should be MAX_PORTS * max_number_of_datapaths */
+    struct pollfd fds[MAX_PORTS]; 
+    
+    /* mask the fatal signals. In this way the main thread is delegate to
+     * manage this them. */
+    sigemptyset(&sigmask);
+    sigaddset(&sigmask, SIGTERM);
+    sigaddset(&sigmask, SIGALRM);
+    sigaddset(&sigmask, SIGINT);
+    sigaddset(&sigmask, SIGHUP);
+
+    if (pthread_sigmask(SIG_BLOCK, &sigmask, NULL) != 0) {
+        printf("Error pthread_sigmask\n");
+    }
+
+    ofpbuf_init(&arg.buf, DP_NETDEV_HEADROOM + VLAN_ETH_HEADER_LEN + max_mtu);
+    for(;;) {
+        struct shash_node *node;
+        n_fds = 0;
+        /* build the structure for poll */
+        SHASH_FOR_EACH(node, &dp_netdevs) {
+            pthread_mutex_lock(&dp->port_list_mutex);
+            LIST_FOR_EACH (port, node, &dp->port_list) {
+                /* insert an element in the fds structure */
+                fds[n_fds].fd = netdev_get_fd(port->netdev);
+                fds[n_fds].events = POLLIN;
+                port->poll_fd = &fds[n_fds];
+                n_fds++;
+            }
+            pthread_mutex_unlock(&dp->port_list_mutex);
+        }
+
+        error = poll(fds, n_fds, 2000);
+
+        if (error < 0) {
+            printf("poll() error: %s\n", strerror(errno));
+            break;
+        }
+
+        SHASH_FOR_EACH (node, &dp_netdevs) {
+            arg.dp = dp;
+            pthread_mutex_lock(&dp->port_list_mutex);
+            LIST_FOR_EACH (port, node, &dp->port_list) {
+                arg.port = port;
+                arg.buf.size = 0;
+                arg.buf.data = (char*)arg.buf.base + DP_NETDEV_HEADROOM;
+                if (port->poll_fd && (port->poll_fd->revents & POLLIN)) {
+                    /* call the dispatch and process the packet into
+                     * its callback. We process 'batch' packets at time */
+                    processed = netdev_dispatch(port->netdev, batch,
+                                         process_pkt, (u_char *)&arg);
+                    if (processed < 0) { /* pcap returns error */
+                        static struct vlog_rate_limit rl =
+                            VLOG_RATE_LIMIT_INIT(1, 5);
+                        VLOG_ERR_RL(&rl, 
+                                "error receiving data from XXX \n"); 
+                    }
+                } /* end of if poll */
+            } /* end of port loop */
+        pthread_mutex_unlock(&dp->port_list_mutex);
+        } /* end of dp loop */
+    } /* for ;; */
+
+    ofpbuf_uninit(&arg.buf);
+    return NULL;
+}
+
+/* Starts the datapath */
+static void
+dpif_netdev_start(void) 
+{
+    int error;
+
+    /* Launch thread which manages the datapath */
+    error = pthread_create(&thread_p, NULL, dp_thread_body, NULL);
+    return;
+}
+
+/* This is the function that is called in response of a fatal signal (e.g.
+ * SIGTERM) */
+static void
+dpif_netdev_exit_hook(void *aux OVS_UNUSED)
+{
+    pthread_cancel(thread_p);
+    pthread_join(thread_p, NULL);
+}
+#endif /* THREADED */
 
 static void
 dp_netdev_set_dl(struct ofpbuf *packet, const struct ovs_key_ethernet *eth_key)
@@ -1267,6 +1546,10 @@ const struct dpif_class dpif_netdev_class = {
     dpif_netdev_destroy,
     dpif_netdev_run,
     dpif_netdev_wait,
+#ifdef THREADED
+    dpif_netdev_start,
+    dpif_netdev_exit_hook,
+#endif
     dpif_netdev_get_stats,
     dpif_netdev_port_add,
     dpif_netdev_port_del,

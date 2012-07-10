@@ -21,6 +21,9 @@
 #include <stddef.h>
 #include <stdint.h>
 #include "openvswitch/types.h"
+#ifdef THREADED
+#include "dispatch.h"
+#endif
 
 #ifdef  __cplusplus
 extern "C" {
@@ -107,6 +110,10 @@ int netdev_get_ifindex(const struct netdev *);
 int netdev_listen(struct netdev *);
 int netdev_recv(struct netdev *, struct ofpbuf *);
 void netdev_recv_wait(struct netdev *);
+#ifdef THREADED
+int netdev_dispatch(struct netdev *, int, pkt_handler, u_char *);
+int netdev_get_fd(struct netdev *);
+#endif
 int netdev_drain(struct netdev *);
 
 int netdev_send(struct netdev *, const struct ofpbuf *);
