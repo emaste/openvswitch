@@ -14,6 +14,25 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+dnl Check for --enable-threaded and updates CFLAGS.
+AC_DEFUN([OVS_CHECK_THREADED],
+  [AC_REQUIRE([AC_PROG_CC])
+   AC_ARG_ENABLE(
+     [threaded],
+     [AC_HELP_STRING([--enable-threaded], 
+                     [Enable threaded version of userspace implementation])],
+     [case "${enableval}" in
+        (yes) threaded=true ;;
+        (no)  threaded=false ;;
+        (*) AC_MSG_ERROR([bad value ${enableval} for --enable-threaded]) ;;
+      esac],
+     [threaded=false])
+   if $threaded; then
+      AC_DEFINE([THREADED], [1],
+                [Define to 1 if the threaded version of userspace
+                implementation is enabled.])
+   fi])
+
 dnl Checks for --enable-coverage and updates CFLAGS and LDFLAGS appropriately.
 AC_DEFUN([OVS_CHECK_COVERAGE],
   [AC_REQUIRE([AC_PROG_CC])

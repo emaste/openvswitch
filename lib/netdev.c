@@ -407,6 +407,28 @@ netdev_recv_wait(struct netdev *netdev)
     }
 }
 
+#ifdef THREADED
+/* Attempts to receive and process 'batch' packets from 'netdev'. */
+int
+netdev_dispatch(struct netdev *netdev, int batch, pkt_handler h, u_char *user)
+{
+   int (*dispatch)(struct netdev*, int, pkt_handler, u_char *);
+
+    dispatch = netdev_get_dev(netdev)->netdev_class->dispatch;
+    return dispatch ? dispatch(netdev, batch, h, user) : 0;
+}
+
+/* Returns the file descriptor */
+int
+netdev_get_fd(struct netdev *netdev)
+{
+    int (*get_fd)(struct netdev *);
+
+    get_fd = netdev_get_dev(netdev)->netdev_class->get_fd;
+    return get_fd ? get_fd(netdev) : 0;
+}
+#endif
+
 /* Discards all packets waiting to be received from 'netdev'. */
 int
 netdev_drain(struct netdev *netdev)

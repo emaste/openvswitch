@@ -1392,6 +1392,10 @@ const struct dpif_class dpif_linux_class = {
     dpif_linux_destroy,
     dpif_linux_run,
     dpif_linux_wait,
+#ifdef THREADED
+    NULL,
+    NULL,
+#endif
     dpif_linux_get_stats,
     dpif_linux_port_add,
     dpif_linux_port_del,

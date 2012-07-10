@@ -2472,6 +2472,12 @@ netdev_linux_change_seq(const struct netdev *netdev)
     return netdev_dev_linux_cast(netdev_get_dev(netdev))->change_seq;
 }
 
+#ifdef THREADED
+#define THREADED_NULL NULL, NULL,
+#else
+#define THREADED_NULL
+#endif
+
 #define NETDEV_LINUX_CLASS(NAME, CREATE, GET_STATS, SET_STATS,  \
                            GET_FEATURES, GET_STATUS)            \
 {                                                               \
@@ -2493,6 +2499,7 @@ netdev_linux_change_seq(const struct netdev *netdev)
     netdev_linux_listen,                                        \
     netdev_linux_recv,                                          \
     netdev_linux_recv_wait,                                     \
+    THREADED_NULL,                                              \
     netdev_linux_drain,                                         \
                                                                 \
     netdev_linux_send,                                          \

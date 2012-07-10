@@ -356,6 +356,7 @@ void dpif_close(struct dpif *);
 
 void dpif_run(struct dpif *);
 void dpif_wait(struct dpif *);
+void dp_start(void);
 
 const char *dpif_name(const struct dpif *);
 const char *dpif_base_name(const struct dpif *);
