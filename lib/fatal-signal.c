@@ -189,7 +189,7 @@ call_hooks(int sig_nr)
         recurse = 1;
 
         for (i = 0; i < n_hooks; i++) {
-            struct hook *h = &hooks[i];
+            struct hook *h = &hooks[n_hooks - i - 1];
             if (sig_nr || h->run_at_exit) {
                 h->hook_cb(h->aux);
             }

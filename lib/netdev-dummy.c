@@ -20,6 +20,12 @@
 
 #include <errno.h>
 
+#ifdef THREADED
+#include <pthread.h>
+#include <unistd.h>
+#include "socket-util.h"
+#endif
+
 #include "flow.h"
 #include "list.h"
 #include "netdev-provider.h"
@@ -59,6 +65,10 @@ struct netdev_dummy {
     struct list node;           /* In netdev_dev_dummy's "devs" list. */
     struct list recv_queue;
     bool listening;
+#ifdef THREADED
+    pthread_mutex_t queue_mutex;
+    int s_pipe[2];              /* used to signal packet arrivals */
+#endif
 };
 
 static struct shash dummy_netdev_devs = SHASH_INITIALIZER(&dummy_netdev_devs);
@@ -176,6 +186,13 @@ netdev_dummy_close(struct netdev *netdev_)
     struct netdev_dummy *netdev = netdev_dummy_cast(netdev_);
     list_remove(&netdev->node);
     ofpbuf_list_delete(&netdev->recv_queue);
+#ifdef THREADED
+    if (netdev->listening) {
+        close(netdev->s_pipe[0]);
+        close(netdev->s_pipe[1]);
+        pthread_mutex_destroy(&netdev->queue_mutex);
+    }
+#endif
     free(netdev);
 }
 
@@ -183,6 +200,15 @@ static int
 netdev_dummy_listen(struct netdev *netdev_)
 {
     struct netdev_dummy *netdev = netdev_dummy_cast(netdev_);
+#ifdef THREADED
+    int error;
+
+    if (netdev->listening)
+        return 0;
+
+    xpipe_nonblocking(netdev->s_pipe);
+    pthread_mutex_init(&netdev->queue_mutex, NULL);
+#endif
     netdev->listening = true;
     return 0;
 }
@@ -193,12 +219,29 @@ netdev_dummy_recv(struct netdev *netdev_, void *buffer, size_t size)
     struct netdev_dummy *netdev = netdev_dummy_cast(netdev_);
     struct ofpbuf *packet;
     size_t packet_size;
+#ifdef THREADED
+    char c;
+#endif
 
+#ifdef THREADED
+    pthread_mutex_lock(&netdev->queue_mutex);
+#endif
     if (list_is_empty(&netdev->recv_queue)) {
+#ifdef THREADED
+        pthread_mutex_unlock(&netdev->queue_mutex);
+#endif
         return -EAGAIN;
     }
+#ifdef THREADED
+    if (read(netdev->s_pipe[0], &c, 1) < 0) {
+        VLOG_ERR("Error reading dummy pipe: %s", strerror(errno));
+    }
+#endif
 
     packet = ofpbuf_from_list(list_pop_front(&netdev->recv_queue));
+#ifdef THREADED
+    pthread_mutex_unlock(&netdev->queue_mutex);
+#endif
     if (packet->size > size) {
         return -EMSGSIZE;
     }
@@ -214,10 +257,59 @@ static void
 netdev_dummy_recv_wait(struct netdev *netdev_)
 {
     struct netdev_dummy *netdev = netdev_dummy_cast(netdev_);
-    if (!list_is_empty(&netdev->recv_queue)) {
+    int empty;
+
+#ifdef THREADED
+    pthread_mutex_lock(&netdev->queue_mutex);
+#endif
+    empty = list_is_empty(&netdev->recv_queue);
+#ifdef THREADED
+    pthread_mutex_unlock(&netdev->queue_mutex);
+#endif
+    if (!empty) {
         poll_immediate_wake();
     }
 }
+
+#ifdef THREADED
+static int
+netdev_dummy_dispatch(struct netdev *netdev_, int batch, pkt_handler h,
+                      u_char *user)
+{
+    int i;
+    struct netdev_dummy *netdev = netdev_dummy_cast(netdev_);
+    struct ofpbuf *packet;
+    VLOG_DBG("dispatch %d", batch);
+    
+    for (i = 0; i < batch; i++) {
+        char c;
+        if (read(netdev->s_pipe[0], &c, 1) < 0) {
+            if (errno == EAGAIN)
+                break;
+            VLOG_ERR("%s: error reading from the pipe: %s",
+                netdev_get_name(netdev_), strerror(errno));
+            return -1;
+        }
+        pthread_mutex_lock(&netdev->queue_mutex);
+        if (list_is_empty(&netdev->recv_queue)) {
+            pthread_mutex_unlock(&netdev->queue_mutex);
+            return -EAGAIN;
+        }
+        packet = ofpbuf_from_list(list_pop_front(&netdev->recv_queue));
+        pthread_mutex_unlock(&netdev->queue_mutex);
+        h(user, packet);
+        ofpbuf_delete(packet);
+    }
+    return i;
+}
+
+static int
+netdev_dummy_get_fd(struct netdev *netdev_)
+{
+    struct netdev_dummy *netdev = netdev_dummy_cast(netdev_);
+    return netdev->s_pipe[0];
+}
+#endif
 
 static int
 netdev_dummy_drain(struct netdev *netdev_)
@@ -379,6 +471,10 @@ static const struct netdev_class dummy_class = {
     netdev_dummy_listen,
     netdev_dummy_recv,
     netdev_dummy_recv_wait,
+#ifdef THREADED
+    netdev_dummy_dispatch,      /* dispatch */
+    netdev_dummy_get_fd,        /* get_fd */
+#endif
     netdev_dummy_drain,
 
     netdev_dummy_send,          /* send */
@@ -470,12 +566,16 @@ netdev_dummy_receive(struct unixctl_conn *conn,
     struct netdev_dev_dummy *dummy_dev;
     int n_listeners;
     int i;
+#ifdef THREADED
+    char c = 0;
+#endif
 
     dummy_dev = shash_find_data(&dummy_netdev_devs, argv[1]);
     if (!dummy_dev) {
         unixctl_command_reply_error(conn, "no such dummy netdev");
         return;
     }
+
 
     n_listeners = 0;
     for (i = 2; i < argc; i++) {
@@ -495,7 +595,16 @@ netdev_dummy_receive(struct unixctl_conn *conn,
         LIST_FOR_EACH (dev, node, &dummy_dev->devs) {
             if (dev->listening) {
                 struct ofpbuf *copy = ofpbuf_clone(packet);
+#ifdef THREADED
+                pthread_mutex_lock(&dev->queue_mutex);
+#endif
                 list_push_back(&dev->recv_queue, &copy->list_node);
+#ifdef THREADED
+                pthread_mutex_unlock(&dev->queue_mutex);
+                if (write(dev->s_pipe[1], &c, 1) < 0) {
+                    VLOG_ERR("Error writing dummy pipe: %s", strerror(errno));
+                }
+#endif
                 n_listeners++;
             }
         }

@@ -868,6 +868,43 @@ netdev_linux_recv_wait(struct netdev *netdev_)
     }
 }
 
+#ifdef THREADED
+static int
+netdev_linux_dispatch(struct netdev *netdev_, int batch, pkt_handler h,
+                      u_char *user)
+{
+    int ret;
+    int i;
+    const size_t size = VLAN_HEADER_LEN + ETH_HEADER_LEN + ETH_PAYLOAD_MAX;
+    OFPBUF_STACK_BUFFER(buf_, size);
+    struct ofpbuf buf;
+    VLOG_DBG("dispatch %d", batch);
+
+    ofpbuf_use_stub(&buf, buf_, size);
+    for (i = 0; i < batch; i++) {
+        ret = netdev_linux_recv(netdev_, buf.data, ofpbuf_tailroom(&buf));
+        if (ret >= 0) {
+            buf.size += ret;
+            h(user, &buf);
+        } else if (ret != -EAGAIN) {
+            return -1;
+        } else {
+            break;
+        }
+        ofpbuf_clear(&buf);
+    }
+    ofpbuf_uninit(&buf);
+    return i;
+}
+
+static int
+netdev_linux_get_fd(struct netdev *netdev_)
+{
+    struct netdev_linux *netdev = netdev_linux_cast(netdev_);
+    return netdev->fd;
+}
+#endif
+
 /* Discards all packets waiting to be received from 'netdev'. */
 static int
 netdev_linux_drain(struct netdev *netdev_)
@@ -2472,6 +2509,12 @@ netdev_linux_change_seq(const struct netdev *netdev)
     return netdev_dev_linux_cast(netdev_get_dev(netdev))->change_seq;
 }
 
+#ifdef THREADED
+#	define THREADED_METHODS netdev_linux_dispatch, netdev_linux_get_fd,
+#else
+#	define THREADED_METHODS
+#endif
+
 #define NETDEV_LINUX_CLASS(NAME, CREATE, GET_STATS, SET_STATS,  \
                            GET_FEATURES, GET_STATUS)            \
 {                                                               \
@@ -2493,6 +2536,7 @@ netdev_linux_change_seq(const struct netdev *netdev)
     netdev_linux_listen,                                        \
     netdev_linux_recv,                                          \
     netdev_linux_recv_wait,                                     \
+    THREADED_METHODS						\
     netdev_linux_drain,                                         \
                                                                 \
     netdev_linux_send,                                          \

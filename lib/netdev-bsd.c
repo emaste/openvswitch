@@ -667,6 +667,89 @@ netdev_bsd_recv_wait(struct netdev *netdev_)
     }
 }
 
+#ifdef THREADED
+
+struct dispatch_arg {
+    pkt_handler h;
+    u_char *user;
+};
+
+static void
+dispatch_handler(u_char *user, const struct pcap_pkthdr *phdr, const u_char *pdata)
+{
+    struct ofpbuf buf;
+    struct dispatch_arg *parg = (struct dispatch_arg*)user;
+
+    ofpbuf_use_stub(&buf, (void*)pdata, phdr->caplen);
+    buf.size = phdr->caplen;
+    (*parg->h)(parg->user, &buf);
+    ofpbuf_uninit(&buf);
+}
+
+static int 
+netdev_bsd_dispatch_system(struct netdev_bsd *netdev, int batch, pkt_handler h, 
+                           u_char *user)
+{
+    int ret;
+    struct dispatch_arg arg;
+
+    arg.h = h;
+    arg.user = user;
+    ret = pcap_dispatch(netdev->pcap_handle, batch, dispatch_handler, (u_char*)&arg);
+    return ret;
+}
+
+static int 
+netdev_bsd_dispatch_tap(struct netdev_bsd *netdev, int batch, pkt_handler h, 
+                        u_char *user)
+{
+    int ret;
+    int i;
+    const size_t size = VLAN_HEADER_LEN + ETH_HEADER_LEN + ETH_PAYLOAD_MAX;
+    OFPBUF_STACK_BUFFER(buf_, size);
+
+    struct ofpbuf buf;
+    ofpbuf_use_stub(&buf, buf_, size);
+    for (i = 0; i < batch; i++) {
+        ret = netdev_bsd_recv_tap(netdev, buf.data, ofpbuf_tailroom(&buf));
+        if (ret >= 0) {
+            buf.size += ret;
+            h(user, &buf);
+        } else if (ret != -EAGAIN) {
+            return -1; 
+        } else { /* ret = EAGAIN */
+            break;
+        }
+        ofpbuf_clear(&buf);
+    }
+    ofpbuf_uninit(&buf);
+    return i;
+}
+
+static int
+netdev_bsd_dispatch(struct netdev *netdev_, int batch, pkt_handler h, 
+                    u_char *user)
+{
+    struct netdev_bsd *netdev = netdev_bsd_cast(netdev_);
+    struct netdev_dev_bsd * netdev_dev =
+        netdev_dev_bsd_cast(netdev_get_dev(netdev_));
+
+    if (!strcmp(netdev_get_type(netdev_), "tap") && 
+            netdev->netdev_fd == netdev_dev->tap_fd) {
+        return netdev_bsd_dispatch_tap(netdev, batch, h, user);
+    } else {
+        return netdev_bsd_dispatch_system(netdev, batch, h, user);
+    }
+}
+
+static int
+netdev_bsd_get_fd(struct netdev *netdev_)
+{
+    struct netdev_bsd *netdev = netdev_bsd_cast(netdev_);
+    return netdev->netdev_fd;
+}
+#endif
+
 /* Discards all packets waiting to be received from 'netdev'. */
 static int
 netdev_bsd_drain(struct netdev *netdev_)
@@ -1264,6 +1347,10 @@ const struct netdev_class netdev_bsd_class = {
 
     netdev_bsd_recv,
     netdev_bsd_recv_wait,
+#ifdef THREADED
+    netdev_bsd_dispatch,
+    netdev_bsd_get_fd,
+#endif
     netdev_bsd_drain,
 
     netdev_bsd_send,
@@ -1325,6 +1412,10 @@ const struct netdev_class netdev_tap_class = {
 
     netdev_bsd_recv,
     netdev_bsd_recv_wait,
+#ifdef THREADED
+    netdev_bsd_dispatch,
+    netdev_bsd_get_fd,
+#endif
     netdev_bsd_drain,
 
     netdev_bsd_send,

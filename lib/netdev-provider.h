@@ -23,6 +23,9 @@
 #include "list.h"
 #include "shash.h"
 #include "smap.h"
+#ifdef THREADED
+#include "dispatch.h"
+#endif
 
 #ifdef  __cplusplus
 extern "C" {
@@ -195,6 +198,22 @@ struct netdev_class {
      * May be null if not needed, such as for a network device that does not
      * implement packet reception through the 'recv' member function. */
     void (*recv_wait)(struct netdev *netdev);
+
+#ifdef THREADED
+    /* Attempts to receive 'batch' packets from 'netdev' and process them
+     * through the 'handler' callback. This function is used in the 'THREADED'
+     * version in order to optimize the forwarding process, since it permits to
+     * process packets directly in the netdev memory.
+     * 
+     * Returns the number of packets processed on success; this can be 0 if no
+     * packets are available to be read. Returns -1 if an error occurred.
+     */
+    int (*dispatch)(struct netdev *netdev, int batch, pkt_handler handler,
+                    u_char *user);
+
+    /* Return the file descriptor of the device */
+    int (*get_fd)(struct netdev *netdev);
+#endif
 
     /* Discards all packets waiting to be received from 'netdev'.
      *
