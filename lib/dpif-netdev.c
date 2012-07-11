@@ -1396,6 +1396,9 @@ dp_netdev_output_userspace(struct dp_netdev *dp, const struct ofpbuf *packet,
         struct dpif_upcall *upcall = &u->upcall;
         struct ofpbuf *buf = &u->buf;
         size_t buf_size;
+#ifdef THREADED
+    char c;
+#endif
 
         upcall->type = queue_no;
 
@@ -1427,6 +1430,16 @@ dp_netdev_output_userspace(struct dp_netdev *dp, const struct ofpbuf *packet,
         buf->size = packet->size;
         upcall->packet = buf;
 
+#ifdef THREADED
+    pthread_mutex_lock(&dp->table_mutex);
+#endif
+#ifdef THREADED
+    /* Write a byte on the pipe to advertise that a packet is ready. */
+    if (write(dp->pipe[1], &c, 1) < 0) {
+        printf("Error writing on the pipe");
+    }
+    pthread_mutex_unlock(&dp->table_mutex);
+#endif
         return 0;
     } else {
         dp->n_lost++;
