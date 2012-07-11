@@ -1369,6 +1369,9 @@ dp_netdev_output_userspace(struct dp_netdev *dp, const struct ofpbuf *packet,
     struct dpif_upcall *upcall;
     struct ofpbuf *buf;
     size_t key_len;
+#ifdef THREADED
+    char c;
+#endif
 
     if (q->head - q->tail >= MAX_QUEUE_LEN) {
         dp->n_lost++;
@@ -1389,7 +1392,17 @@ dp_netdev_output_userspace(struct dp_netdev *dp, const struct ofpbuf *packet,
     upcall->key_len = key_len;
     upcall->userdata = arg;
 
+#ifdef THREADED
+    pthread_mutex_lock(&dp->table_mutex);
+#endif
     q->upcalls[q->head++ & QUEUE_MASK] = upcall;
+#ifdef THREADED
+    /* Write a byte on the pipe to advertise that a packet is ready. */
+    if (write(dp->pipe[1], &c, 1) < 0) {
+        printf("Error writing on the pipe");
+    }
+    pthread_mutex_unlock(&dp->table_mutex);
+#endif
 
     return 0;
 }
