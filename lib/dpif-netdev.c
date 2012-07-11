@@ -305,6 +305,8 @@ dpif_netdev_open(const struct dpif_class *class, const char *name,
     return 0;
 }
 
+/* table_mutex must be locked in THREADED mode.
+ */
 static void
 dp_netdev_purge_queues(struct dp_netdev *dp)
 {
@@ -1131,7 +1133,14 @@ static void
 dpif_netdev_recv_purge(struct dpif *dpif)
 {
     struct dpif_netdev *dpif_netdev = dpif_netdev_cast(dpif);
+#ifdef THREADED
+    struct dp_netdev *dp = get_dp_netdev(dpif);
+    pthread_mutex_lock(&dp->table_mutex);
+#endif
     dp_netdev_purge_queues(dpif_netdev->dp);
+#ifdef THREADED
+    pthread_mutex_unlock(&dp->table_mutex);
+#endif
 }
 
 static void
