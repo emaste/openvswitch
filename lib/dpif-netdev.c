@@ -974,7 +974,13 @@ dpif_netdev_flow_dump_next(const struct dpif *dpif, void *state_,
     struct dp_netdev_flow *flow;
     struct hmap_node *node;
 
+#ifdef THREADED
+    pthread_mutex_lock(&dp->table_mutex);
+#endif
     node = hmap_at_position(&dp->flow_table, &state->bucket, &state->offset);
+#ifdef THREADED
+    pthread_mutex_unlock(&dp->table_mutex);
+#endif
     if (!node) {
         return EOF;
     }
