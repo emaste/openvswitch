@@ -126,9 +126,6 @@ main(int argc, char *argv[])
         bridge_run();
         bridge_run_fast();
         unixctl_server_run(unixctl);
-#ifdef notdef_THREADED
-        dp_run();
-#endif
         netdev_run();
 
         worker_wait();
@@ -136,9 +133,6 @@ main(int argc, char *argv[])
         memory_wait();
         bridge_wait();
         unixctl_server_wait(unixctl);
-#ifdef notdef_THREADED
-        dp_wait();
-#endif
         netdev_wait();
         if (exiting) {
             poll_immediate_wake();

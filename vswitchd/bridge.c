@@ -2322,7 +2322,6 @@ static void
 bridge_create(const struct ovsrec_bridge *br_cfg)
 {
     struct bridge *br;
-    static int first = 1;
 
     assert(!bridge_lookup(br_cfg->name));
     br = xzalloc(sizeof *br);
@@ -2345,15 +2344,6 @@ bridge_create(const struct ovsrec_bridge *br_cfg)
     list_init(&br->ofpp_garbage);
 
     hmap_insert(&all_bridges, &br->node, hash_string(br->name, 0));
-
-#ifdef THREADED
-    /* The first time a bridge is created, we launch the datapath thread. */
-    if (first) {
-        fprintf(stderr, "THREADED version running!\n");
-        dp_start();
-        first = 0;
-    }
-#endif
 }
 
 static void

@@ -255,6 +255,7 @@ create_dp_netdev(const char *name, const struct dpif_class *class,
         fprintf(stderr, "error set_nonblock on pipe\n");
         return errno;
     }
+    VLOG_DBG("IPC pipe fds: %d %d", dp->pipe[0], dp->pipe[1]);
 
     pthread_mutex_init(&dp->table_mutex, NULL);
     pthread_mutex_init(&dp->port_list_mutex, NULL);
@@ -437,6 +438,7 @@ do_add_port(struct dp_netdev *dp, const char *devname, const char *type,
     if (!error) {
         max_mtu = mtu;
     }
+
 #ifdef THREADED
     pthread_mutex_lock(&dp->port_list_mutex);
 #endif
@@ -1185,6 +1187,15 @@ dp_netdev_port_input(struct dp_netdev *dp, struct dp_netdev_port *port,
 static void
 dpif_netdev_run(struct dpif *dpif)
 {
+#ifdef THREADED
+    static int started = 0;
+    if (started == 0) {
+        VLOG_DBG("datapath thread started");
+        dp_start();
+        started = 1;
+    }
+#else
+
     struct dp_netdev *dp = get_dp_netdev(dpif);
     struct dp_netdev_port *port;
     struct ofpbuf packet;
@@ -1208,6 +1219,7 @@ dpif_netdev_run(struct dpif *dpif)
         }
     }
     ofpbuf_uninit(&packet);
+#endif
 }
 
 /* This function is no longer called in the threaded version. */
@@ -1290,6 +1302,7 @@ dp_thread_body(void *args OVS_UNUSED)
         n_fds = 0;
         /* build the structure for poll */
         SHASH_FOR_EACH(node, &dp_netdevs) {
+            dp = (struct dp_netdev *)node->data;
             pthread_mutex_lock(&dp->port_list_mutex);
             LIST_FOR_EACH (port, node, &dp->port_list) {
                 /* insert an element in the fds structure */
@@ -1302,6 +1315,7 @@ dp_thread_body(void *args OVS_UNUSED)
         }
 
         error = poll(fds, n_fds, 2000);
+        VLOG_DBG("dp_thread_body poll wakeup with cnt=%d", error);
 
         if (error < 0) {
             printf("poll() error: %s\n", strerror(errno));
@@ -1309,12 +1323,14 @@ dp_thread_body(void *args OVS_UNUSED)
         }
 
         SHASH_FOR_EACH (node, &dp_netdevs) {
+            dp = (struct dp_netdev *)node->data;
             arg.dp = dp;
             pthread_mutex_lock(&dp->port_list_mutex);
             LIST_FOR_EACH (port, node, &dp->port_list) {
                 arg.port = port;
                 arg.buf.size = 0;
                 arg.buf.data = (char*)arg.buf.base + DP_NETDEV_HEADROOM;
+                VLOG_DBG("fd %d revents 0x%x", port->poll_fd->fd, port->poll_fd->revents);
                 if (port->poll_fd && (port->poll_fd->revents & POLLIN)) {
                     /* call the dispatch and process the packet into
                      * its callback. We process 'batch' packets at time */

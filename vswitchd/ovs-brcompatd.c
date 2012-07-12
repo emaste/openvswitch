@@ -830,9 +830,6 @@ main(int argc, char *argv[])
         rtnetlink_link_run();
         brc_recv_update();
 
-#ifdef THREADED
-        /* XXX? */
-#endif
         netdev_run();
 
         nl_sock_wait(brc_sock, POLLIN);
