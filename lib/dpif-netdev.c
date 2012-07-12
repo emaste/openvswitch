@@ -1355,7 +1355,9 @@ dp_thread_body(void *args OVS_UNUSED)
                 arg.port = port;
                 arg.buf.size = 0;
                 arg.buf.data = (char*)arg.buf.base + DP_NETDEV_HEADROOM;
-                VLOG_DBG("fd %d revents 0x%x", port->poll_fd->fd, port->poll_fd->revents);
+                if (port->poll_fd) {
+                    VLOG_DBG("fd %d revents 0x%x", port->poll_fd->fd, port->poll_fd->revents);
+                }
                 if (port->poll_fd && (port->poll_fd->revents & POLLIN)) {
                     /* call the dispatch and process the packet into
                      * its callback. We process 'batch' packets at time */
