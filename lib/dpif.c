@@ -370,36 +370,6 @@ dpif_wait(struct dpif *dpif)
     }
 }
 
-#ifdef THREADED
-/* Start the datapath management.
- * 
- * This function has been thought for a scenario in which the management of the
- * datapath module and the ofproto module are performed in separate
- * threads/processes module. */
-#if 0
-void
-dpif_start(struct dpif *dpif)
-{
-    if (dpif->dpif_class->start) {
-        dpif->dpif_class->start(dpif);
-    }
-}
-#endif
-
-void
-dp_start(void)
-{
-    struct shash_node *node;
-
-    SHASH_FOR_EACH(node, &dpif_classes) {
-        const struct registered_dpif_class *registered_class = node->data;
-        if (registered_class->dpif_class->start) {
-            registered_class->dpif_class->start();
-        }
-    }
-}
-#endif
-
 /* Returns the name of datapath 'dpif' prefixed with the type
  * (for use in log messages). */
 const char *

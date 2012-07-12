@@ -108,13 +108,13 @@ struct dp_netdev {
      * - dp_netdev_output_control() send to queue and write p[1]
      */
 
-    /* The access to this queue is protected by the table_mutex mutex */
     int pipe[2];    /* signal a packet on the queue */
 
     pthread_mutex_t table_mutex;    /* mutex for the flow table */
     pthread_mutex_t port_list_mutex;    /* port list mutex */
-#endif
 
+    /* The access to this queue is protected by the table_mutex mutex */
+#endif
     struct dp_netdev_queue queues[N_QUEUES];
     struct hmap flow_table;     /* Flow table. */
 
@@ -1184,18 +1184,25 @@ dp_netdev_port_input(struct dp_netdev *dp, struct dp_netdev_port *port,
     }
 }
 
+#ifdef THREADED
+static void * dp_thread_body(void *args OVS_UNUSED);
+static void
+dpif_netdev_run(struct dpif *dpif OVS_UNUSED)
+{
+    static int error, started = 0;
+    if (started == 0) {
+        error = pthread_create(&thread_p, NULL, dp_thread_body, NULL);
+        if (error != 0)
+            VLOG_ERR("XXX error");
+        else
+            VLOG_DBG("datapath thread started");
+        started = 1;
+    }
+}
+#else
 static void
 dpif_netdev_run(struct dpif *dpif)
 {
-#ifdef THREADED
-    static int started = 0;
-    if (started == 0) {
-        VLOG_DBG("datapath thread started");
-        dp_start();
-        started = 1;
-    }
-#else
-
     struct dp_netdev *dp = get_dp_netdev(dpif);
     struct dp_netdev_port *port;
     struct ofpbuf packet;
@@ -1219,8 +1226,8 @@ dpif_netdev_run(struct dpif *dpif)
         }
     }
     ofpbuf_uninit(&packet);
-#endif
 }
+#endif
 
 #ifdef THREADED
 /* This function is no longer called in the threaded version. */
@@ -1357,17 +1364,6 @@ dp_thread_body(void *args OVS_UNUSED)
 
     ofpbuf_uninit(&arg.buf);
     return NULL;
-}
-
-/* Starts the datapath */
-static void
-dpif_netdev_start(void) 
-{
-    int error;
-
-    /* Launch thread which manages the datapath */
-    error = pthread_create(&thread_p, NULL, dp_thread_body, NULL);
-    return;
 }
 
 /* This is the function that is called in response of a fatal signal (e.g.
@@ -1598,7 +1594,7 @@ const struct dpif_class dpif_netdev_class = {
     dpif_netdev_run,
     dpif_netdev_wait,
 #ifdef THREADED
-    dpif_netdev_start,
+    NULL,
     dpif_netdev_exit_hook,
 #endif
     dpif_netdev_get_stats,
