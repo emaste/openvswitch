@@ -1246,7 +1246,13 @@ dpif_netdev_run(struct dpif *dpif)
 #endif
 }
 
+#ifdef THREADED
 /* This function is no longer called in the threaded version. */
+static void
+dpif_netdev_wait(struct dpif *dpif OVS_UNUSED)
+{
+}
+#else
 static void
 dpif_netdev_wait(struct dpif *dpif)
 {
@@ -1257,6 +1263,7 @@ dpif_netdev_wait(struct dpif *dpif)
         netdev_recv_wait(port->netdev);
     }
 }
+#endif
 
 #ifdef THREADED
 /*
