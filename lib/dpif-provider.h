@@ -108,11 +108,6 @@ struct dpif_class {
     void (*wait)(struct dpif *dpif);
 
 #ifdef THREADED
-    /* Starts the datapath management. This function is thought for a scenario
-     * in which the datapath and the ofproto modules are managed in different
-     * threads/processes */
-    void (*start)(void);
-
     /* Function called in the arrival of a fatal signal (e.g. SIGTERM) */
     void (*exit_hook)(void*);
 #endif

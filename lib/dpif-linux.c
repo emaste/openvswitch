@@ -1301,7 +1301,6 @@ const struct dpif_class dpif_linux_class = {
     dpif_linux_wait,
 #ifdef THREADED
     NULL,
-    NULL,
 #endif
     dpif_linux_get_stats,
     dpif_linux_port_add,
