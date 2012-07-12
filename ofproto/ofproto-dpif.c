@@ -1070,9 +1070,7 @@ wait(struct ofproto *ofproto_)
         poll_immediate_wake();
     }
 
-#ifndef THREADED
     dpif_wait(ofproto->dpif);
-#endif
     dpif_recv_wait(ofproto->dpif);
     if (ofproto->sflow) {
         dpif_sflow_wait(ofproto->sflow);
