@@ -336,6 +336,27 @@ create_dp_netdev(const char *name, const struct dpif_class *class,
     return 0;
 }
 
+#ifdef THREADED
+static void * dp_thread_body(void *args OVS_UNUSED);
+static int
+thread_start(void)
+{
+    int error;
+    static int started = 0;
+    if (started == 0) {
+        error = pthread_create(&thread_p, NULL, dp_thread_body, NULL);
+        if (error != 0) {
+            VLOG_ERR("XXX error");
+            return errno;
+        } else {
+            VLOG_DBG("datapath thread started");
+        }
+        started = 1;
+    }
+    return 0;
+}
+#endif
+
 static int
 dpif_netdev_open(const struct dpif_class *class, const char *name,
                  bool create, struct dpif **dpifp)
@@ -362,6 +383,9 @@ dpif_netdev_open(const struct dpif_class *class, const char *name,
     }
 
     *dpifp = create_dpif_netdev(dp);
+#ifdef THREADED
+    thread_start();
+#endif
     return 0;
 }
 
@@ -1208,19 +1232,14 @@ dp_netdev_port_input(struct dp_netdev *dp, struct dp_netdev_port *port,
 }
 
 #ifdef THREADED
-static void * dp_thread_body(void *args OVS_UNUSED);
 static void
 dpif_netdev_run(struct dpif *dpif OVS_UNUSED)
 {
-    static int error, started = 0;
-    if (started == 0) {
-        error = pthread_create(&thread_p, NULL, dp_thread_body, NULL);
-        if (error != 0)
-            VLOG_ERR("XXX error");
-        else
-            VLOG_DBG("datapath thread started");
-        started = 1;
-    }
+}
+
+static void
+dpif_netdev_wait(struct dpif *dpif OVS_UNUSED)
+{
 }
 #else
 static void
@@ -1251,15 +1270,7 @@ dpif_netdev_run(struct dpif *dpif)
     }
     ofpbuf_uninit(&packet);
 }
-#endif
 
-#ifdef THREADED
-/* This function is no longer called in the threaded version. */
-static void
-dpif_netdev_wait(struct dpif *dpif OVS_UNUSED)
-{
-}
-#else
 static void
 dpif_netdev_wait(struct dpif *dpif)
 {
@@ -1656,7 +1667,6 @@ const struct dpif_class dpif_netdev_class = {
     dpif_netdev_run,
     dpif_netdev_wait,
 #ifdef THREADED
-    NULL,
     dpif_netdev_exit_hook,
 #endif
     dpif_netdev_get_stats,
