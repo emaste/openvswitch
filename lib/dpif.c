@@ -40,7 +40,6 @@
 #include "timeval.h"
 #include "util.h"
 #include "valgrind.h"
-#include "fatal-signal.h"
 #include "vlog.h"
 
 VLOG_DEFINE_THIS_MODULE(dpif);
@@ -101,24 +100,11 @@ dp_initialize(void)
 
     if (status < 0) {
         int i;
-#ifdef THREADED
-        struct shash_node *node;
-#endif
 
         status = 0;
         for (i = 0; i < ARRAY_SIZE(base_dpif_classes); i++) {
             dp_register_provider(base_dpif_classes[i]);
         }
-#ifdef THREADED
-        /* register an exit handler for the registered classes */
-        SHASH_FOR_EACH(node, &dpif_classes) {
-            const struct registered_dpif_class *registered_class = node->data;
-            if (registered_class->dpif_class->exit_hook) {
-                fatal_signal_add_hook(registered_class->dpif_class->exit_hook,
-                        NULL, NULL, true);
-            }
-        }
-#endif
     }
 }
 
