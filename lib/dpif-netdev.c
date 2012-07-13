@@ -1356,8 +1356,12 @@ dp_thread_body(void *args OVS_UNUSED)
         VLOG_DBG("dp_thread_body poll wakeup with cnt=%d", error);
 
         if (error < 0) {
+            if (errno == EINTR) {
+                /* XXX get this case in detach mode */
+                continue;
+            }
             VLOG_ERR("Datapath thread poll() error: %s\n", strerror(errno));
-            /* XXX */
+            /* XXX terminating the thread is probably not right */
             break;
         }
         pthread_testcancel();
