@@ -306,14 +306,15 @@ create_dp_netdev(const char *name, const struct dpif_class *class,
 #ifdef THREADED
     error = pipe(dp->pipe);
     if (error) {
-        fprintf(stderr, "pipe creation error\n");
+        VLOG_ERR("Unable to create datapath thread pipe: %s", strerror(errno));
         return errno;
     }
     if (set_nonblocking(dp->pipe[0]) || set_nonblocking(dp->pipe[1])) {
-        fprintf(stderr, "error set_nonblock on pipe\n");
+        VLOG_ERR("Unable to set nonblocking on datapath thread pipe: %s",
+                 strerror(errno));
         return errno;
     }
-    VLOG_DBG("IPC pipe fds: %d %d", dp->pipe[0], dp->pipe[1]);
+    VLOG_DBG("Datapath thread pipe created (%d, %d)", dp->pipe[0], dp->pipe[1]);
 
     pthread_mutex_init(&dp->table_mutex, NULL);
     pthread_mutex_init(&dp->port_list_mutex, NULL);
@@ -344,7 +345,6 @@ static void * dp_thread_body(void *args OVS_UNUSED);
 static void
 dpif_netdev_exit_hook(void *aux OVS_UNUSED)
 {
-    VLOG_DBG("cancelling datapath thread");
     if (pthread_cancel(thread_p) == 0) {
         pthread_join(thread_p, NULL);
     }
@@ -359,10 +359,10 @@ thread_start(void)
         fatal_signal_add_hook(dpif_netdev_exit_hook, NULL, NULL, true);
         error = pthread_create(&thread_p, NULL, dp_thread_body, NULL);
         if (error != 0) {
-            VLOG_ERR("XXX error");
+            VLOG_ERR("Unable to create datapath thread: %s", strerror(errno));
             return errno;
         } else {
-            VLOG_DBG("datapath thread started");
+            VLOG_DBG("Datapath thread started");
         }
         started = 1;
     }
@@ -1168,7 +1168,7 @@ dpif_netdev_recv(struct dpif *dpif, struct dpif_upcall *upcall,
         /* Read a byte from the pipe to signal that a packet has been
          * received. */
         if (read(dp->pipe[0], &c, 1) < 0) {
-            printf("Error reading from the pipe\n");
+            VLOG_ERR("Error reading from the pipe: %s", strerror(errno));
         }
         pthread_mutex_unlock(&dp->table_mutex);
 #endif
@@ -1355,7 +1355,7 @@ dp_thread_body(void *args OVS_UNUSED)
     sigaddset(&sigmask, SIGHUP);
 
     if (pthread_sigmask(SIG_BLOCK, &sigmask, NULL) != 0) {
-        printf("Error pthread_sigmask\n");
+        VLOG_ERR("Error setting thread sigmask: %s", errno);
     }
 
     ofpbuf_init(&arg.buf, DP_NETDEV_HEADROOM + VLAN_ETH_HEADER_LEN + max_mtu);
@@ -1380,7 +1380,8 @@ dp_thread_body(void *args OVS_UNUSED)
         VLOG_DBG("dp_thread_body poll wakeup with cnt=%d", error);
 
         if (error < 0) {
-            fprintf(stderr, "poll() error: %s\n", strerror(errno));
+            VLOG_ERR("Datapath thread poll() error: %s\n", strerror(errno));
+            /* XXX */
             break;
         }
         pthread_testcancel();
@@ -1489,7 +1490,7 @@ dp_netdev_output_userspace(struct dp_netdev *dp, const struct ofpbuf *packet,
 #ifdef THREADED
     /* Write a byte on the pipe to advertise that a packet is ready. */
     if (write(dp->pipe[1], &c, 1) < 0) {
-        printf("Error writing on the pipe");
+        VLOG_ERR("Error writing on the pipe: %s", strerror(errno));
     }
     pthread_mutex_unlock(&dp->table_mutex);
 #endif
