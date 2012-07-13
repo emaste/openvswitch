@@ -279,12 +279,25 @@ create_dp_netdev(const char *name, const struct dpif_class *class,
 
 #ifdef THREADED
 static void * dp_thread_body(void *args OVS_UNUSED);
+
+/* This is the function that is called in response of a fatal signal (e.g.
+ * SIGTERM) */
+static void
+dpif_netdev_exit_hook(void *aux OVS_UNUSED)
+{
+    VLOG_DBG("cancelling datapath thread");
+    if (pthread_cancel(thread_p) == 0) {
+        pthread_join(thread_p, NULL);
+    }
+}
+
 static int
 thread_start(void)
 {
     int error;
     static int started = 0;
     if (started == 0) {
+        fatal_signal_add_hook(dpif_netdev_exit_hook, NULL, NULL, true);
         error = pthread_create(&thread_p, NULL, dp_thread_body, NULL);
         if (error != 0) {
             VLOG_ERR("XXX error");
@@ -1343,9 +1356,10 @@ dp_thread_body(void *args OVS_UNUSED)
         VLOG_DBG("dp_thread_body poll wakeup with cnt=%d", error);
 
         if (error < 0) {
-            printf("poll() error: %s\n", strerror(errno));
+            fprintf(stderr, "poll() error: %s\n", strerror(errno));
             break;
         }
+        pthread_testcancel();
 
         SHASH_FOR_EACH (node, &dp_netdevs) {
             dp = (struct dp_netdev *)node->data;
@@ -1379,14 +1393,6 @@ dp_thread_body(void *args OVS_UNUSED)
     return NULL;
 }
 
-/* This is the function that is called in response of a fatal signal (e.g.
- * SIGTERM) */
-static void
-dpif_netdev_exit_hook(void *aux OVS_UNUSED)
-{
-    pthread_cancel(thread_p);
-    pthread_join(thread_p, NULL);
-}
 #endif /* THREADED */
 
 static void
@@ -1606,9 +1612,6 @@ const struct dpif_class dpif_netdev_class = {
     dpif_netdev_destroy,
     dpif_netdev_run,
     dpif_netdev_wait,
-#ifdef THREADED
-    dpif_netdev_exit_hook,
-#endif
     dpif_netdev_get_stats,
     dpif_netdev_port_add,
     dpif_netdev_port_del,

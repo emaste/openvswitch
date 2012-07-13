@@ -107,11 +107,6 @@ struct dpif_class {
      * to be called for 'dpif'. */
     void (*wait)(struct dpif *dpif);
 
-#ifdef THREADED
-    /* Function called in the arrival of a fatal signal (e.g. SIGTERM) */
-    void (*exit_hook)(void*);
-#endif
-
     /* Retrieves statistics for 'dpif' into 'stats'. */
     int (*get_stats)(const struct dpif *dpif, struct dpif_dp_stats *stats);
 
