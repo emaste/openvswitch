@@ -550,7 +550,20 @@ static int
 dpif_netdev_port_del(struct dpif *dpif, uint16_t port_no)
 {
     struct dp_netdev *dp = get_dp_netdev(dpif);
-    return port_no == OVSP_LOCAL ? EINVAL : do_del_port(dp, port_no);
+    int error;
+
+    if (port_no == OVSP_LOCAL) {
+        return EINVAL;
+    } else {
+#ifdef THREADED
+        pthread_mutex_lock(&dp->port_list_mutex);
+#endif        
+        error = do_del_port(dp, port_no);
+#ifdef THREADED
+        pthread_mutex_unlock(&dp->port_list_mutex);
+#endif        
+    }
+    return error;
 }
 
 static bool
