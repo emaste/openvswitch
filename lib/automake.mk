@@ -35,6 +35,7 @@ lib_libopenvswitch_a_SOURCES = \
 	lib/daemon.c \
 	lib/daemon.h \
 	lib/dhcp.h \
+	lib/dispatch.h \
 	lib/dummy.c \
 	lib/dummy.h \
 	lib/dhparams.h \
