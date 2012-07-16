@@ -351,22 +351,21 @@ dpif_netdev_exit_hook(void *aux OVS_UNUSED)
 }
 
 static int
-thread_start(void)
+dpif_netdev_init(void)
 {
-    int error;
-    static int started = 0;
-    if (started == 0) {
+    static int error = -1;
+
+    if (error < 0) {
         fatal_signal_add_hook(dpif_netdev_exit_hook, NULL, NULL, true);
         error = pthread_create(&thread_p, NULL, dp_thread_body, NULL);
         if (error != 0) {
             VLOG_ERR("Unable to create datapath thread: %s", strerror(errno));
-            return errno;
+            error = errno;
         } else {
             VLOG_DBG("Datapath thread started");
         }
-        started = 1;
     }
-    return 0;
+    return error;
 }
 #endif
 
@@ -397,7 +396,7 @@ dpif_netdev_open(const struct dpif_class *class, const char *name,
 
     *dpifp = create_dpif_netdev(dp);
 #ifdef THREADED
-    thread_start();
+    dpif_netdev_init();
 #endif
     return 0;
 }
