@@ -632,6 +632,7 @@ get_port_by_name(struct dp_netdev *dp,
     return ENOENT;
 }
 
+/* In THREADED mode, must be called with port_list_mutex held. */
 static int
 do_del_port(struct dp_netdev *dp, uint32_t port_no)
 {
@@ -639,7 +640,6 @@ do_del_port(struct dp_netdev *dp, uint32_t port_no)
     char *name;
     int error;
 
-    /* XXX why no semaphores?? */
     error = get_port_by_number(dp, port_no, &port);
     if (error) {
         return error;
