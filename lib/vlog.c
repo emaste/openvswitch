@@ -37,6 +37,9 @@
 #include "unixctl.h"
 #include "util.h"
 #include "worker.h"
+#ifdef THREADED
+#include <pthread.h>
+#endif
 
 VLOG_DEFINE_THIS_MODULE(vlog);
 
@@ -91,6 +94,10 @@ static int log_fd = -1;
 
 /* vlog initialized? */
 static bool vlog_inited;
+
+#ifdef THREADED
+static pthread_mutex_t vlog_mutex;
+#endif
 
 static void format_log_message(const struct vlog_module *, enum vlog_level,
                                enum vlog_facility, unsigned int msg_num,
@@ -492,6 +499,9 @@ vlog_init(void)
         return;
     }
     vlog_inited = true;
+#ifdef THREADED
+    pthread_mutex_init(&vlog_mutex, NULL);
+#endif
 
     /* openlog() is allowed to keep the pointer passed in, without making a
      * copy.  The daemonize code sometimes frees and replaces 'program_name',
@@ -707,6 +717,9 @@ vlog_valist(const struct vlog_module *module, enum vlog_level level,
 
         ds_init(&s);
         ds_reserve(&s, 1024);
+#ifdef THREADED
+        pthread_mutex_lock(&vlog_mutex);
+#endif
         msg_num++;
 
         if (log_to_console) {
@@ -736,6 +749,9 @@ vlog_valist(const struct vlog_module *module, enum vlog_level level,
             vlog_write_file(&s);
         }
 
+#ifdef THREADED
+        pthread_mutex_unlock(&vlog_mutex);
+#endif
         ds_destroy(&s);
         errno = save_errno;
     }
