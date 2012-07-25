@@ -614,6 +614,12 @@ get_stats(const struct netdev *netdev, struct netdev_stats *stats)
     return 0;
 }
 
+#ifdef THREADED
+#	define THREADED_NULL NULL, NULL,
+#else
+#	define THREADED_NULL
+#endif
+
 #define VPORT_FUNCTIONS(GET_CONFIG, SET_CONFIG,             \
                         GET_TUNNEL_CONFIG, GET_STATUS)      \
     NULL,                                                   \
@@ -632,6 +638,7 @@ get_stats(const struct netdev *netdev, struct netdev_stats *stats)
     NULL,                       /* listen */                \
     NULL,                       /* recv */                  \
     NULL,                       /* recv_wait */             \
+    THREADED_NULL					    \
     NULL,                       /* drain */                 \
                                                             \
     NULL,                       /* send */                  \

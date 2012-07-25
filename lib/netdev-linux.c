@@ -2499,7 +2499,7 @@ netdev_linux_change_seq(const struct netdev *netdev)
     netdev_linux_listen,                                        \
     netdev_linux_recv,                                          \
     netdev_linux_recv_wait,                                     \
-    THREADED_NULL,                                              \
+    THREADED_NULL                                               \
     netdev_linux_drain,                                         \
                                                                 \
     netdev_linux_send,                                          \

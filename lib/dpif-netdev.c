@@ -1437,7 +1437,7 @@ dp_thread_body(void *args OVS_UNUSED)
             dp = (struct dp_netdev *)node->data;
             if (dp->pipe_fd && (dp->pipe_fd->revents & POLLIN)) {
                 VLOG_DBG("Signalled from main thread");
-                while (error = read(dp->pipe[1], readbuf, sizeof(readbuf)) > 0)
+                while ( (error = read(dp->pipe[1], readbuf, sizeof(readbuf))) > 0)
                         ;
                 if (error < 0) {
                    VLOG_ERR("Error reading from the pipe: %s", strerror(errno));
@@ -1493,9 +1493,11 @@ dp_netdev_output_port(struct dp_netdev *dp, struct ofpbuf *packet,
 
     if (p) {
         netdev_send(p->netdev, packet);
+#ifdef THREADED
         if (write(dp->pipe[0], &c, 1) < 0) {
             VLOG_ERR("Pipe write error (to datapath): %s", strerror(errno));
         }
+#endif
     }
 }
 
