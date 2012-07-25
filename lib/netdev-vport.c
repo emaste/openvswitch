@@ -899,6 +899,13 @@ unparse_patch_config(const char *name OVS_UNUSED, const char *type OVS_UNUSED,
     return 0;
 }
 
+
+#ifdef THREADED
+#	define THREADED_NULL NULL, NULL,
+#else
+#	define THREADED_NULL
+#endif
+
 #define VPORT_FUNCTIONS(GET_STATUS)                         \
     NULL,                                                   \
     netdev_vport_run,                                       \
@@ -915,6 +922,7 @@ unparse_patch_config(const char *name OVS_UNUSED, const char *type OVS_UNUSED,
     NULL,                       /* listen */                \
     NULL,                       /* recv */                  \
     NULL,                       /* recv_wait */             \
+    THREADED_NULL					    \
     NULL,                       /* drain */                 \
                                                             \
     netdev_vport_send,          /* send */                  \
