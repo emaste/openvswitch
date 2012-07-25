@@ -33,9 +33,9 @@ PYCOV_CLEAN_FILES = build-aux/check-structs,cover
 EXTRA_DIST = \
 	CodingStyle \
 	DESIGN \
+	INSTALL \
 	INSTALL.KVM \
 	INSTALL.Libvirt \
-	INSTALL.Linux \
 	INSTALL.RHEL \
 	INSTALL.SSL \
 	INSTALL.XenServer \

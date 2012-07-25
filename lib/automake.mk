@@ -232,6 +232,9 @@ endif
 
 if HAVE_IF_DL
 lib_libopenvswitch_a_SOURCES += \
+	lib/netdev-bsd.c \
+	lib/rtbsd.c \
+	lib/rtbsd.h \
 	lib/route-table-bsd.c
 endif
 
