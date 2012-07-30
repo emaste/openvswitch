@@ -85,12 +85,14 @@ set_nonblocking(int fd)
 static int
 set_dscp(int fd, uint8_t dscp)
 {
+    int val;
+
     if (dscp > 63) {
         return EINVAL;
     }
 
-    dscp = dscp << 2;
-    if (setsockopt(fd, IPPROTO_IP, IP_TOS, &dscp, sizeof dscp)) {
+    val = dscp << 2;
+    if (setsockopt(fd, IPPROTO_IP, IP_TOS, &val, sizeof val)) {
         return errno;
     }
 
