@@ -20,6 +20,11 @@
 
 #include <errno.h>
 
+#ifdef THREADED
+#include <unistd.h>
+#include "socket-util.h"
+#endif
+
 #include "flow.h"
 #include "list.h"
 #include "netdev-provider.h"
@@ -59,6 +64,9 @@ struct netdev_dummy {
     struct list node;           /* In netdev_dev_dummy's "devs" list. */
     struct list recv_queue;
     bool listening;
+#ifdef THREADED
+    int s_pipe[2];		/* used to signal packet arrivals */
+#endif
 };
 
 static struct shash dummy_netdev_devs = SHASH_INITIALIZER(&dummy_netdev_devs);
@@ -176,6 +184,12 @@ netdev_dummy_close(struct netdev *netdev_)
     struct netdev_dummy *netdev = netdev_dummy_cast(netdev_);
     list_remove(&netdev->node);
     ofpbuf_list_delete(&netdev->recv_queue);
+#ifdef THREADED
+    if (netdev->listening) {
+	    close(netdev->s_pipe[0]);
+	    close(netdev->s_pipe[1]);
+    }
+#endif
     free(netdev);
 }
 
@@ -183,6 +197,25 @@ static int
 netdev_dummy_listen(struct netdev *netdev_)
 {
     struct netdev_dummy *netdev = netdev_dummy_cast(netdev_);
+#ifdef THREADED
+    if (netdev->listening) {
+	    return 0;
+    }
+    if (pipe(netdev->s_pipe) < 0) {
+        VLOG_ERR("%s: unable to create signal pipe",
+             netdev_get_name(netdev_));
+		return -errno;
+    }
+    VLOG_DBG("%s: created s_pipe (%d, %d)", netdev_get_name(netdev_), 
+			    netdev->s_pipe[0], netdev->s_pipe[1]);
+    if (set_nonblocking(netdev->s_pipe[0]) || set_nonblocking(netdev->s_pipe[1])) {
+        VLOG_ERR("%s: unable to set non blocking on signal pipe: %s",
+	      netdev_get_name(netdev_), strerror(errno));
+		close(netdev->s_pipe[0]);
+		close(netdev->s_pipe[1]);
+		return -errno;
+    }
+#endif
     netdev->listening = true;
     return 0;
 }
@@ -218,6 +251,48 @@ netdev_dummy_recv_wait(struct netdev *netdev_)
         poll_immediate_wake();
     }
 }
+
+#ifdef THREADED
+static int
+netdev_dummy_dispatch(struct netdev *netdev_, int batch, pkt_handler h,
+		u_char *user)
+{
+    int i;
+    u_char buf[VLAN_HEADER_LEN + ETH_HEADER_LEN +ETH_PAYLOAD_MAX];
+    struct pkthdr hdr;
+    struct netdev_dummy *netdev = netdev_dummy_cast(netdev_);
+    VLOG_DBG("dispatch %d", batch);
+    
+    for (i = 0; i < batch; i++) {
+        char c;
+        if (read(netdev->s_pipe[0], &c, 1) < 0) {
+	    if (errno == EAGAIN)
+		    break;
+            VLOG_ERR("%s: error reading from the pipe: %s",
+                netdev_get_name(netdev_), strerror(errno));
+            return -1;
+        }
+        ret = netdev_dummy_recv(netdev_, buf, sizeof(buf));
+        if (ret >= 0) {
+	    hdr.caplen = ret;
+	    hdr.len = ret;
+	    h(user, &hdr, buf);
+        } else if (ret != -EAGAIN) {
+	    return -1;
+	} else {
+	    break;
+	}
+    }
+    return i;
+}
+
+static int
+netdev_dummy_get_fd(struct netdev *netdev_)
+{
+    struct netdev_dummy *netdev = netdev_dummy_cast(netdev_);
+    return netdev->s_pipe[0];
+}
+#endif
 
 static int
 netdev_dummy_drain(struct netdev *netdev_)
@@ -380,8 +455,8 @@ static const struct netdev_class dummy_class = {
     netdev_dummy_recv,
     netdev_dummy_recv_wait,
 #ifdef THREADED
-    NULL,                       /* dispatch */
-    NULL,                       /* get_fd */
+    netdev_dummy_dispatch, 
+    netdev_dummy_get_fd,
 #endif
     netdev_dummy_drain,
 
@@ -481,6 +556,7 @@ netdev_dummy_receive(struct unixctl_conn *conn,
         return;
     }
 
+
     n_listeners = 0;
     for (i = 2; i < argc; i++) {
         struct netdev_dummy *dev;
@@ -501,6 +577,12 @@ netdev_dummy_receive(struct unixctl_conn *conn,
                 struct ofpbuf *copy = ofpbuf_clone(packet);
                 list_push_back(&dev->recv_queue, &copy->list_node);
                 n_listeners++;
+#ifdef THREADED
+                if (write(dev->s_pipe[1], "1", 1) < 0) {
+                    VLOG_ERR("%s: write on s_pipe failed: %s",
+                        netdev_get_name(&dev->netdev), strerror(errno));
+                }
+#endif
             }
         }
         ofpbuf_delete(packet);
