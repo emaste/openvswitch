@@ -253,22 +253,28 @@ netdev_dummy_dispatch(struct netdev *netdev_, int batch, pkt_handler h,
 {
     int ret;
     int i;
-    u_char buf[VLAN_HEADER_LEN + ETH_HEADER_LEN +ETH_PAYLOAD_MAX];
-    struct pkthdr hdr;
     struct netdev_dummy *netdev = netdev_dummy_cast(netdev_);
+    struct ofpbuf *packet;
     VLOG_DBG("dispatch %d", batch);
     
     for (i = 0; i < batch; i++) {
-        ret = netdev_dummy_recv(netdev_, buf, sizeof(buf));
-        if (ret >= 0) {
-	    hdr.caplen = ret;
-	    hdr.len = ret;
-	    h(user, &hdr, buf);
-        } else if (ret != -EAGAIN) {
-	    return -1;
-	} else {
-	    break;
-	}
+        char c;
+        if (read(netdev->s_pipe[0], &c, 1) < 0) {
+            if (errno == EAGAIN)
+                break;
+            VLOG_ERR("%s: error reading from the pipe: %s",
+                netdev_get_name(netdev_), strerror(errno));
+            return -1;
+        }
+        pthread_mutex_lock(&netdev->queue_mutex);
+        if (list_is_empty(&netdev->recv_queue)) {
+            pthread_mutex_unlock(&netdev->queue_mutex);
+            return -EAGAIN;
+        }
+        packet = ofpbuf_from_list(list_pop_front(&netdev->recv_queue));
+        pthread_mutex_unlock(&netdev->queue_mutex);
+        h(user, packet);
+        ofpbuf_delete(packet);
     }
     return i;
 }

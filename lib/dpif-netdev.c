@@ -1309,7 +1309,6 @@ dpif_netdev_wait(struct dpif *dpif)
 struct dispatch_arg {
     struct dp_netdev *dp;   /* update statistics */
     struct dp_netdev_port *port;    /* argument to flow identifier function */
-    struct ofpbuf buf;      /* used to process the packet */
 };
 
 /* Process a packet.
@@ -1319,19 +1318,12 @@ struct dispatch_arg {
  * If a flow is not found or for the other actions, the packet is copied.
  */
 static void
-process_pkt(u_char *arg_p, const struct pkthdr *hdr, const u_char *packet)
+process_pkt(u_char *user, struct ofpbuf *buf)
 {
-    struct dispatch_arg *arg = (struct dispatch_arg *)arg_p;
-    struct ofpbuf *buf = &arg->buf;
+    struct dispatch_arg *arg = (struct dispatch_arg *)user;
 
-    /* set packet size and data pointer */
-    buf->size = hdr->caplen; /* XXX Must the size be equal to hdr->len or
-                              * hdr->caplen */
-    buf->data = (void*)packet;
-
+    ofpbuf_padto(buf, ETH_TOTAL_MIN);
     dp_netdev_port_input(arg->dp, arg->port, buf);
-
-    return;
 }
 
 /* Body of the thread that manages the datapaths */
@@ -1365,7 +1357,6 @@ dp_thread_body(void *args OVS_UNUSED)
         VLOG_ERR("Error setting thread sigmask: %s", strerror(errno));
     }
 
-    ofpbuf_init(&arg.buf, DP_NETDEV_HEADROOM + VLAN_ETH_HEADER_LEN + max_mtu);
     for(;;) {
         struct shash_node *node;
         n_fds = 0;
@@ -1423,8 +1414,6 @@ dp_thread_body(void *args OVS_UNUSED)
             pthread_mutex_lock(&dp->port_list_mutex);
             LIST_FOR_EACH (port, node, &dp->port_list) {
                 arg.port = port;
-                arg.buf.size = 0;
-                arg.buf.data = (char*)arg.buf.base + DP_NETDEV_HEADROOM;
                 if (port->poll_fd) {
                     VLOG_DBG("fd %d revents 0x%x", port->poll_fd->fd, port->poll_fd->revents);
                 }
@@ -1441,11 +1430,10 @@ dp_thread_body(void *args OVS_UNUSED)
                     }
                 } /* end of if poll */
             } /* end of port loop */
-        pthread_mutex_unlock(&dp->port_list_mutex);
+            pthread_mutex_unlock(&dp->port_list_mutex);
         } /* end of dp loop */
     } /* for ;; */
 
-    ofpbuf_uninit(&arg.buf);
     return NULL;
 }
 
