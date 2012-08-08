@@ -1217,7 +1217,7 @@ ofctl_barrier(struct unixctl_conn *conn, int argc OVS_UNUSED,
         return;
     }
 
-    msg = ofputil_encode_barrier_request();
+    msg = ofputil_encode_barrier_request(vconn_get_version(aux->vconn));
     error = vconn_send_block(aux->vconn, msg);
     if (error) {
         ofpbuf_delete(msg);
@@ -1440,8 +1440,8 @@ ofctl_probe(int argc OVS_UNUSED, char *argv[])
     struct vconn *vconn;
     struct ofpbuf *reply;
 
-    request = make_echo_request();
     open_vconn(argv[1], &vconn);
+    request = make_echo_request(vconn_get_version(vconn));
     run(vconn_transact(vconn, request, &reply), "talking to %s", argv[1]);
     if (reply->size != sizeof(struct ofp_header)) {
         ovs_fatal(0, "reply does not match request");
@@ -2334,20 +2334,50 @@ ofctl_parse_ofp10_actions(int argc OVS_UNUSED, char *argv[] OVS_UNUSED)
 /* "parse-ofp10-match": reads a series of ofp10_match specifications as hex
  * bytes from stdin, converts them to cls_rules, prints them as strings on
  * stdout, and then converts them back to hex bytes and prints any differences
- * from the input. */
+ * from the input.
+ *
+ * The input hex bytes may contain "x"s to represent "don't-cares", bytes whose
+ * values are ignored in the input and will be set to zero when OVS converts
+ * them back to hex bytes.  ovs-ofctl actually sets "x"s to random bits when
+ * it does the conversion to hex, to ensure that in fact they are ignored. */
 static void
 ofctl_parse_ofp10_match(int argc OVS_UNUSED, char *argv[] OVS_UNUSED)
 {
+    struct ds expout;
     struct ds in;
 
     ds_init(&in);
+    ds_init(&expout);
     while (!ds_get_preprocessed_line(&in, stdin)) {
-        struct ofpbuf match_in;
+        struct ofpbuf match_in, match_expout;
         struct ofp10_match match_out;
         struct ofp10_match match_normal;
         struct cls_rule rule;
+        char *p;
 
-        /* Parse hex bytes. */
+        /* Parse hex bytes to use for expected output. */
+        ds_clear(&expout);
+        ds_put_cstr(&expout, ds_cstr(&in));
+        for (p = ds_cstr(&expout); *p; p++) {
+            if (*p == 'x') {
+                *p = '0';
+            }
+        }
+        ofpbuf_init(&match_expout, 0);
+        if (ofpbuf_put_hex(&match_expout, ds_cstr(&expout), NULL)[0] != '\0') {
+            ovs_fatal(0, "Trailing garbage in hex data");
+        }
+        if (match_expout.size != sizeof(struct ofp10_match)) {
+            ovs_fatal(0, "Input is %zu bytes, expected %zu",
+                      match_expout.size, sizeof(struct ofp10_match));
+        }
+
+        /* Parse hex bytes for input. */
+        for (p = ds_cstr(&in); *p; p++) {
+            if (*p == 'x') {
+                *p = "0123456789abcdef"[random_uint32() & 0xf];
+            }
+        }
         ofpbuf_init(&match_in, 0);
         if (ofpbuf_put_hex(&match_in, ds_cstr(&in), NULL)[0] != '\0') {
             ovs_fatal(0, "Trailing garbage in hex data");
@@ -2364,7 +2394,7 @@ ofctl_parse_ofp10_match(int argc OVS_UNUSED, char *argv[] OVS_UNUSED)
 
         /* Convert back to ofp10_match and print differences from input. */
         ofputil_cls_rule_to_ofp10_match(&rule, &match_out);
-        print_differences("", match_in.data, match_in.size,
+        print_differences("", match_expout.data, match_expout.size,
                           &match_out, sizeof match_out);
 
         /* Normalize, then convert and compare again. */
@@ -2375,8 +2405,10 @@ ofctl_parse_ofp10_match(int argc OVS_UNUSED, char *argv[] OVS_UNUSED)
         putchar('\n');
 
         ofpbuf_uninit(&match_in);
+        ofpbuf_uninit(&match_expout);
     }
     ds_destroy(&in);
+    ds_destroy(&expout);
 }
 
 /* "parse-ofp11-match": reads a series of ofp11_match specifications as hex
@@ -2660,17 +2692,14 @@ ofctl_print_error(int argc OVS_UNUSED, char *argv[])
     }
 
     for (version = 0; version <= UINT8_MAX; version++) {
-        const struct ofperr_domain *domain;
-
-        domain = ofperr_domain_from_version(version);
-        if (!domain) {
+        const char *name = ofperr_domain_get_name(version);
+        if (!name) {
             continue;
         }
-
         printf("%s: %d,%d\n",
-               ofperr_domain_get_name(domain),
-               ofperr_get_type(error, domain),
-               ofperr_get_code(error, domain));
+               ofperr_domain_get_name(version),
+               ofperr_get_type(error, version),
+               ofperr_get_code(error, version));
     }
 }
 

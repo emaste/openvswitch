@@ -1259,6 +1259,15 @@ ofputil_decode_flow_mod(struct ofputil_flow_mod *fm,
     return 0;
 }
 
+static ovs_be16
+ofputil_tid_command(const struct ofputil_flow_mod *fm,
+                    enum ofputil_protocol protocol)
+{
+    return htons(protocol & OFPUTIL_P_TID
+                 ? (fm->command & 0xff) | (fm->table_id << 8)
+                 : fm->command);
+}
+
 /* Converts 'fm' into an OFPT_FLOW_MOD or NXT_FLOW_MOD message according to
  * 'protocol' and returns the message. */
 struct ofpbuf *
@@ -1266,13 +1275,33 @@ ofputil_encode_flow_mod(const struct ofputil_flow_mod *fm,
                         enum ofputil_protocol protocol)
 {
     struct ofpbuf *msg;
-    uint16_t command;
-
-    command = (protocol & OFPUTIL_P_TID
-               ? (fm->command & 0xff) | (fm->table_id << 8)
-               : fm->command);
 
     switch (protocol) {
+    case OFPUTIL_P_OF12: {
+        struct ofp11_flow_mod *ofm;
+
+        msg = ofpraw_alloc(OFPRAW_OFPT11_FLOW_MOD, OFP12_VERSION,
+                           NXM_TYPICAL_LEN + fm->ofpacts_len);
+        ofm = ofpbuf_put_zeros(msg, sizeof *ofm);
+        ofm->cookie = fm->new_cookie;
+        ofm->cookie_mask = fm->cookie_mask;
+        ofm->table_id = fm->table_id;
+        ofm->command = fm->command;
+        ofm->idle_timeout = htons(fm->idle_timeout);
+        ofm->hard_timeout = htons(fm->hard_timeout);
+        ofm->priority = htons(fm->cr.priority);
+        ofm->buffer_id = htonl(fm->buffer_id);
+        ofm->out_port = ofputil_port_to_ofp11(fm->out_port);
+        ofm->out_group = htonl(OFPG11_ANY);
+        ofm->flags = htons(fm->flags);
+        oxm_put_match(msg, &fm->cr);
+        if (fm->ofpacts) {
+            ofpacts_put_openflow11_instructions(fm->ofpacts, fm->ofpacts_len,
+                                                msg);
+        }
+        break;
+    }
+
     case OFPUTIL_P_OF10:
     case OFPUTIL_P_OF10_TID: {
         struct ofp10_flow_mod *ofm;
@@ -1282,13 +1311,16 @@ ofputil_encode_flow_mod(const struct ofputil_flow_mod *fm,
         ofm = ofpbuf_put_zeros(msg, sizeof *ofm);
         ofputil_cls_rule_to_ofp10_match(&fm->cr, &ofm->match);
         ofm->cookie = fm->new_cookie;
-        ofm->command = htons(command);
+        ofm->command = ofputil_tid_command(fm, protocol);
         ofm->idle_timeout = htons(fm->idle_timeout);
         ofm->hard_timeout = htons(fm->hard_timeout);
         ofm->priority = htons(fm->cr.priority);
         ofm->buffer_id = htonl(fm->buffer_id);
         ofm->out_port = htons(fm->out_port);
         ofm->flags = htons(fm->flags);
+        if (fm->ofpacts) {
+            ofpacts_put_openflow10(fm->ofpacts, fm->ofpacts_len, msg);
+        }
         break;
     }
 
@@ -1300,7 +1332,7 @@ ofputil_encode_flow_mod(const struct ofputil_flow_mod *fm,
         msg = ofpraw_alloc(OFPRAW_NXT_FLOW_MOD, OFP10_VERSION,
                            NXM_TYPICAL_LEN + fm->ofpacts_len);
         nfm = ofpbuf_put_zeros(msg, sizeof *nfm);
-        nfm->command = htons(command);
+        nfm->command = ofputil_tid_command(fm, protocol);
         nfm->cookie = fm->new_cookie;
         match_len = nx_put_match(msg, &fm->cr, fm->cookie, fm->cookie_mask);
         nfm = msg->l3;
@@ -1311,17 +1343,16 @@ ofputil_encode_flow_mod(const struct ofputil_flow_mod *fm,
         nfm->out_port = htons(fm->out_port);
         nfm->flags = htons(fm->flags);
         nfm->match_len = htons(match_len);
+        if (fm->ofpacts) {
+            ofpacts_put_openflow10(fm->ofpacts, fm->ofpacts_len, msg);
+        }
         break;
     }
 
-    case OFPUTIL_P_OF12:
     default:
         NOT_REACHED();
     }
 
-    if (fm->ofpacts) {
-        ofpacts_put_openflow10(fm->ofpacts, fm->ofpacts_len, msg);
-    }
     ofpmsg_update_length(msg);
     return msg;
 }
@@ -2973,9 +3004,9 @@ ofputil_encode_packet_out(const struct ofputil_packet_out *po)
 
 /* Creates and returns an OFPT_ECHO_REQUEST message with an empty payload. */
 struct ofpbuf *
-make_echo_request(void)
+make_echo_request(enum ofp_version ofp_version)
 {
-    return ofpraw_alloc_xid(OFPRAW_OFPT_ECHO_REQUEST, OFP10_VERSION,
+    return ofpraw_alloc_xid(OFPRAW_OFPT_ECHO_REQUEST, ofp_version,
                             htonl(0), 0);
 }
 
@@ -2996,9 +3027,25 @@ make_echo_reply(const struct ofp_header *rq)
 }
 
 struct ofpbuf *
-ofputil_encode_barrier_request(void)
+ofputil_encode_barrier_request(enum ofp_version ofp_version)
 {
-    return ofpraw_alloc(OFPRAW_OFPT10_BARRIER_REQUEST, OFP10_VERSION, 0);
+    enum ofpraw type;
+
+    switch (ofp_version) {
+    case OFP12_VERSION:
+    case OFP11_VERSION:
+        type = OFPRAW_OFPT11_BARRIER_REQUEST;
+        break;
+
+    case OFP10_VERSION:
+        type = OFPRAW_OFPT10_BARRIER_REQUEST;
+        break;
+
+    default:
+        NOT_REACHED();
+    }
+
+    return ofpraw_alloc(type, ofp_version, 0);
 }
 
 const char *
@@ -3272,23 +3319,8 @@ ofputil_put_action(enum ofputil_action_code code, struct ofpbuf *buf)
     }
 #include "ofp-util.def"
 
-/* "Normalizes" the wildcards in 'rule'.  That means:
- *
- *    1. If the type of level N is known, then only the valid fields for that
- *       level may be specified.  For example, ARP does not have a TOS field,
- *       so nw_tos must be wildcarded if 'rule' specifies an ARP flow.
- *       Similarly, IPv4 does not have any IPv6 addresses, so ipv6_src and
- *       ipv6_dst (and other fields) must be wildcarded if 'rule' specifies an
- *       IPv4 flow.
- *
- *    2. If the type of level N is not known (or not understood by Open
- *       vSwitch), then no fields at all for that level may be specified.  For
- *       example, Open vSwitch does not understand SCTP, an L4 protocol, so the
- *       L4 fields tp_src and tp_dst must be wildcarded if 'rule' specifies an
- *       SCTP flow.
- */
-void
-ofputil_normalize_rule(struct cls_rule *rule)
+static void
+ofputil_normalize_rule__(struct cls_rule *rule, bool may_log)
 {
     enum {
         MAY_NW_ADDR     = 1 << 0, /* nw_src, nw_dst */
@@ -3362,7 +3394,7 @@ ofputil_normalize_rule(struct cls_rule *rule)
 
     /* Log any changes. */
     if (!flow_wildcards_equal(&wc, &rule->wc)) {
-        bool log = !VLOG_DROP_INFO(&bad_ofmsg_rl);
+        bool log = may_log && !VLOG_DROP_INFO(&bad_ofmsg_rl);
         char *pre = log ? cls_rule_to_string(rule) : NULL;
 
         rule->wc = wc;
@@ -3377,6 +3409,39 @@ ofputil_normalize_rule(struct cls_rule *rule)
             free(post);
         }
     }
+}
+
+/* "Normalizes" the wildcards in 'rule'.  That means:
+ *
+ *    1. If the type of level N is known, then only the valid fields for that
+ *       level may be specified.  For example, ARP does not have a TOS field,
+ *       so nw_tos must be wildcarded if 'rule' specifies an ARP flow.
+ *       Similarly, IPv4 does not have any IPv6 addresses, so ipv6_src and
+ *       ipv6_dst (and other fields) must be wildcarded if 'rule' specifies an
+ *       IPv4 flow.
+ *
+ *    2. If the type of level N is not known (or not understood by Open
+ *       vSwitch), then no fields at all for that level may be specified.  For
+ *       example, Open vSwitch does not understand SCTP, an L4 protocol, so the
+ *       L4 fields tp_src and tp_dst must be wildcarded if 'rule' specifies an
+ *       SCTP flow.
+ *
+ * If this function changes 'rule', it logs a rate-limited informational
+ * message. */
+void
+ofputil_normalize_rule(struct cls_rule *rule)
+{
+    ofputil_normalize_rule__(rule, true);
+}
+
+/* Same as ofputil_normalize_rule() without the logging.  Thus, this function
+ * is suitable for a program's internal use, whereas ofputil_normalize_rule()
+ * sense for use on flows received from elsewhere (so that a bug in the program
+ * that sent them can be reported and corrected). */
+void
+ofputil_normalize_rule_quiet(struct cls_rule *rule)
+{
+    ofputil_normalize_rule__(rule, false);
 }
 
 /* Parses a key or a key-value pair from '*stringp'.
