@@ -668,13 +668,33 @@ netdev_bsd_recv_wait(struct netdev *netdev_)
 }
 
 #ifdef THREADED
+
+struct dispatch_arg {
+    pkt_handler h;
+    u_char *user;
+};
+
+static void
+dispatch_handler(u_char *user, const struct pcap_pkthdr *phdr, const u_char *pdata)
+{
+    struct ofpbuf buf;
+    struct dispatch_arg *parg = (struct dispatch_arg*)user;
+
+    ofpbuf_use_stub(&buf, (void*)pdata, phdr->caplen);
+    (*parg->h)(parg->user, &buf);
+    ofpbuf_uninit(&buf);
+}
+
 static int 
 netdev_bsd_dispatch_system(struct netdev_bsd *netdev, int batch, pkt_handler h, 
                            u_char *user)
 {
     int ret;
+    struct dispatch_arg arg;
 
-    ret = pcap_dispatch(netdev->pcap_handle, batch, (pcap_handler)h , user);
+    arg.h = h;
+    arg.user = user;
+    ret = pcap_dispatch(netdev->pcap_handle, batch, dispatch_handler, (u_char*)&arg);
     return ret;
 }
 
@@ -684,22 +704,24 @@ netdev_bsd_dispatch_tap(struct netdev_bsd *netdev, int batch, pkt_handler h,
 {
     int ret;
     int i;
-    u_char buf[VLAN_HEADER_LEN + ETH_HEADER_LEN + ETH_PAYLOAD_MAX];
-    struct pkthdr hdr;
+    const size_t size = VLAN_HEADER_LEN + ETH_HEADER_LEN + ETH_PAYLOAD_MAX;
+    OFPBUF_STACK_BUFFER(buf_, size);
 
+    struct ofpbuf buf;
+    ofpbuf_use_stub(&buf, buf_, size);
     for (i = 0; i < batch; i++) {
-        ret = netdev_bsd_recv_tap(netdev, buf, sizeof(buf));
+        ret = netdev_bsd_recv_tap(netdev, buf.data, ofpbuf_tailroom(&buf));
         if (ret >= 0) {
-            /* XXX hdr.len should be set to the effective length of the packet */
-            hdr.caplen = ret;
-            hdr.len = ret;
-            h(user, &hdr, buf);
+            buf.size += ret;
+            h(user, &buf);
         } else if (ret != -EAGAIN) {
             return -1; 
         } else { /* ret = EAGAIN */
             break;
         }
+        ofpbuf_clear(&buf);
     }
+    ofpbuf_uninit(&buf);
     return i;
 }
 
