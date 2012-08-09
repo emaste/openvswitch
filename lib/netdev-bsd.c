@@ -681,6 +681,7 @@ dispatch_handler(u_char *user, const struct pcap_pkthdr *phdr, const u_char *pda
     struct dispatch_arg *parg = (struct dispatch_arg*)user;
 
     ofpbuf_use_stub(&buf, (void*)pdata, phdr->caplen);
+    buf.size = phdr->caplen;
     (*parg->h)(parg->user, &buf);
     ofpbuf_uninit(&buf);
 }
