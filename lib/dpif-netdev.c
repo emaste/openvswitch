@@ -64,8 +64,7 @@
 #include "vlog.h"
 
 VLOG_DEFINE_THIS_MODULE(dpif_netdev);
-/* We could use these macros instead of using #ifdef and #endif every time we
- * need to call the pthread_mutex_lock/unlock.
+/* Pthread lock macros, nops in the non-threaded case. */
 #ifdef THREADED
 #define LOCK(mutex) pthread_mutex_lock(mutex)
 #define UNLOCK(mutex) pthread_mutex_unlock(mutex)
@@ -73,7 +72,6 @@ VLOG_DEFINE_THIS_MODULE(dpif_netdev);
 #define LOCK(mutex)
 #define UNLOCK(mutex)
 #endif
-*/
 
 /* Configuration parameters. */
 enum { MAX_PORTS = 256 };       /* Maximum number of ports. */
@@ -426,20 +424,16 @@ dp_netdev_free(struct dp_netdev *dp)
     struct dp_netdev_port *port, *next;
 
     dp_netdev_flow_flush(dp);
-#ifdef THREADED
-    pthread_mutex_lock(&dp->port_list_mutex);
-#endif
+    LOCK(&dp->port_list_mutex);
     LIST_FOR_EACH_SAFE (port, next, node, &dp->port_list) {
         do_del_port(dp, port->port_no);
     }
-#ifdef THREADED
-    pthread_mutex_unlock(&dp->port_list_mutex);
-    pthread_mutex_lock(&dp->table_mutex);
-#endif
+    UNLOCK(&dp->port_list_mutex);
+    LOCK(&dp->table_mutex);
     dp_netdev_purge_queues(dp);
     hmap_destroy(&dp->flow_table);
 #ifdef THREADED
-    pthread_mutex_unlock(&dp->table_mutex);
+    UNLOCK(&dp->table_mutex);
     pthread_mutex_destroy(&dp->table_mutex);
     pthread_mutex_destroy(&dp->port_list_mutex);
 #endif
@@ -471,13 +465,9 @@ static int
 dpif_netdev_get_stats(const struct dpif *dpif, struct dpif_dp_stats *stats)
 {
     struct dp_netdev *dp = get_dp_netdev(dpif);
-#ifdef THREADED
-    pthread_mutex_lock(&dp->table_mutex);
-#endif
+    LOCK(&dp->table_mutex);
     stats->n_flows = hmap_count(&dp->flow_table);
-#ifdef THREADED
-    pthread_mutex_unlock(&dp->table_mutex);
-#endif
+    UNLOCK(&dp->table_mutex);
     stats->n_hit = dp->n_hit;
     stats->n_missed = dp->n_missed;
     stats->n_lost = dp->n_lost;
@@ -533,13 +523,9 @@ do_add_port(struct dp_netdev *dp, const char *devname, const char *type,
         max_mtu = mtu;
     }
 
-#ifdef THREADED
-    pthread_mutex_lock(&dp->port_list_mutex);
-#endif
+    LOCK(&dp->port_list_mutex);
     list_push_back(&dp->port_list, &port->node);
-#ifdef THREADED
-    pthread_mutex_unlock(&dp->port_list_mutex);
-#endif
+    UNLOCK(&dp->port_list_mutex);
     dp->ports[port_no] = port;
     dp->serial++;
 
@@ -580,13 +566,9 @@ dpif_netdev_port_del(struct dpif *dpif, uint32_t port_no)
     if (port_no == OVSP_LOCAL) {
         return EINVAL;
     } else {
-#ifdef THREADED
-        pthread_mutex_lock(&dp->port_list_mutex);
-#endif        
+        LOCK(&dp->port_list_mutex);
         error = do_del_port(dp, port_no);
-#ifdef THREADED
-        pthread_mutex_unlock(&dp->port_list_mutex);
-#endif        
+        UNLOCK(&dp->port_list_mutex);
     }
     return error;
 }
@@ -616,21 +598,15 @@ get_port_by_name(struct dp_netdev *dp,
 {
     struct dp_netdev_port *port;
 
-#ifdef THREADED
-    pthread_mutex_lock(&dp->port_list_mutex);
-#endif
+    LOCK(&dp->port_list_mutex);
     LIST_FOR_EACH (port, node, &dp->port_list) {
         if (!strcmp(netdev_vport_get_dpif_port(port->netdev), devname)) {
             *portp = port;
-#ifdef THREADED
-            pthread_mutex_unlock(&dp->port_list_mutex);
-#endif
+            UNLOCK(&dp->port_list_mutex);
             return 0;
         }
     }
-#ifdef THREADED
-    pthread_mutex_unlock(&dp->port_list_mutex);
-#endif
+    UNLOCK(&dp->port_list_mutex);
     return ENOENT;
 }
 
@@ -709,13 +685,9 @@ dpif_netdev_get_max_ports(const struct dpif *dpif OVS_UNUSED)
 static void
 dp_netdev_free_flow(struct dp_netdev *dp, struct dp_netdev_flow *flow)
 {
-#ifdef THREADED
-    pthread_mutex_lock(&dp->table_mutex);
-#endif
+    LOCK(&dp->table_mutex);
     hmap_remove(&dp->flow_table, &flow->node);
-#ifdef THREADED
-    pthread_mutex_unlock(&dp->table_mutex);
-#endif
+    UNLOCK(&dp->table_mutex);
     free(flow->actions);
     free(flow);
 }
@@ -826,9 +798,9 @@ dp_netdev_lookup_flow(struct dp_netdev *dp, const struct flow *key)
 {
     struct dp_netdev_flow *flow;
 
-    pthread_mutex_lock(&dp->table_mutex);
+    LOCK(&dp->table_mutex);
     flow = dp_netdev_lookup_flow_locked(dp, key);
-    pthread_mutex_unlock(&dp->table_mutex);
+    UNLOCK(&dp->table_mutex);
     return flow;
 }
 #endif
@@ -929,13 +901,9 @@ dp_netdev_flow_add(struct dp_netdev *dp, const struct flow *key,
         return error;
     }
 
-#ifdef THREADED
-    pthread_mutex_lock(&dp->table_mutex);
-#endif
+    LOCK(&dp->table_mutex);
     hmap_insert(&dp->flow_table, &flow->node, flow_hash(&flow->key, 0));
-#ifdef THREADED
-    pthread_mutex_unlock(&dp->table_mutex);
-#endif
+    UNLOCK(&dp->table_mutex);
     return 0;
 }
 
@@ -965,13 +933,9 @@ dpif_netdev_flow_put(struct dpif *dpif, const struct dpif_flow_put *put)
     flow = dp_netdev_lookup_flow(dp, &key);
     if (!flow) {
         if (put->flags & DPIF_FP_CREATE) {
-#ifdef THREADED
-            pthread_mutex_lock(&dp->table_mutex);
-#endif
+            LOCK(&dp->table_mutex);
             n_flows = hmap_count(&dp->flow_table);
-#ifdef THREADED
-            pthread_mutex_unlock(&dp->table_mutex);
-#endif
+            UNLOCK(&dp->table_mutex);
             if (n_flows < MAX_FLOWS) {
                 if (put->stats) {
                     memset(put->stats, 0, sizeof *put->stats);
@@ -1058,13 +1022,9 @@ dpif_netdev_flow_dump_next(const struct dpif *dpif, void *state_,
     struct dp_netdev_flow *flow;
     struct hmap_node *node;
 
-#ifdef THREADED
-    pthread_mutex_lock(&dp->table_mutex);
-#endif
+    LOCK(&dp->table_mutex);
     node = hmap_at_position(&dp->flow_table, &state->bucket, &state->offset);
-#ifdef THREADED
-    pthread_mutex_unlock(&dp->table_mutex);
-#endif
+    UNLOCK(&dp->table_mutex);
     if (!node) {
         return EOF;
     }
@@ -1174,7 +1134,7 @@ dpif_netdev_recv(struct dpif *dpif, struct dpif_upcall *upcall,
 #ifdef THREADED
     struct dp_netdev *dp = get_dp_netdev(dpif);
     char c;
-    pthread_mutex_lock(&dp->table_mutex);
+    LOCK(&dp->table_mutex);
 #endif
     q = find_nonempty_queue(dpif);
     if (q) {
@@ -1192,13 +1152,11 @@ dpif_netdev_recv(struct dpif *dpif, struct dpif_upcall *upcall,
         if (read(dp->pipe[0], &c, 1) < 0) {
             VLOG_ERR("Pipe read error (from datapath): %s", strerror(errno));
         }
-        pthread_mutex_unlock(&dp->table_mutex);
+        UNLOCK(&dp->table_mutex);
 #endif
         return 0;
     } else {
-#ifdef THREADED
-        pthread_mutex_unlock(&dp->table_mutex);
-#endif
+        UNLOCK(&dp->table_mutex);
         return EAGAIN;
     }
 }
@@ -1226,12 +1184,10 @@ dpif_netdev_recv_purge(struct dpif *dpif)
     struct dpif_netdev *dpif_netdev = dpif_netdev_cast(dpif);
 #ifdef THREADED
     struct dp_netdev *dp = get_dp_netdev(dpif);
-    pthread_mutex_lock(&dp->table_mutex);
+    LOCK(&dp->table_mutex);
 #endif
     dp_netdev_purge_queues(dpif_netdev->dp);
-#ifdef THREADED
-    pthread_mutex_unlock(&dp->table_mutex);
-#endif
+    UNLOCK(&dp->table_mutex);
 }
 
 static void
@@ -1255,7 +1211,7 @@ dp_netdev_port_input(struct dp_netdev *dp, struct dp_netdev_port *port,
     }
     flow_extract(packet, 0, 0, NULL, port->port_no, &key);
 #ifdef THREADED
-    pthread_mutex_lock(&dp->table_mutex);
+    LOCK(&dp->table_mutex);
     flow = dp_netdev_lookup_flow_locked(dp, &key);
 #else
     flow = dp_netdev_lookup_flow(dp, &key);
@@ -1269,9 +1225,7 @@ dp_netdev_port_input(struct dp_netdev *dp, struct dp_netdev_port *port,
         dp->n_missed++;
         dp_netdev_output_userspace(dp, packet, DPIF_UC_MISS, &key, NULL);
     }
-#ifdef THREADED
-    pthread_mutex_unlock(&dp->table_mutex);
-#endif
+    UNLOCK(&dp->table_mutex);
 }
 
 #ifdef THREADED
@@ -1395,7 +1349,7 @@ dp_thread_body(void *args OVS_UNUSED)
                 VLOG_ERR("Too many fds for poll adding pipe_fd");
                 break;
             }
-            pthread_mutex_lock(&dp->port_list_mutex);
+            LOCK(&dp->port_list_mutex);
             LIST_FOR_EACH (port, node, &dp->port_list) {
                 /* insert an element in the fds structure */
                 fds[n_fds].fd = netdev_get_fd(port->netdev);
@@ -1407,7 +1361,7 @@ dp_thread_body(void *args OVS_UNUSED)
                     break;
                 }
             }
-            pthread_mutex_unlock(&dp->port_list_mutex);
+            UNLOCK(&dp->port_list_mutex);
         }
 
         error = poll(fds, n_fds, 2000);
@@ -1435,7 +1389,7 @@ dp_thread_body(void *args OVS_UNUSED)
                 }
             }
             arg.dp = dp;
-            pthread_mutex_lock(&dp->port_list_mutex);
+            LOCK(&dp->port_list_mutex);
             LIST_FOR_EACH (port, node, &dp->port_list) {
                 arg.port = port;
                 if (port->poll_fd) {
@@ -1454,7 +1408,7 @@ dp_thread_body(void *args OVS_UNUSED)
                     }
                 } /* end of if poll */
             } /* end of port loop */
-            pthread_mutex_unlock(&dp->port_list_mutex);
+            UNLOCK(&dp->port_list_mutex);
         } /* end of dp loop */
     } /* for ;; */
 
@@ -1591,13 +1545,9 @@ dp_netdev_action_userspace(struct dp_netdev *dp,
     const struct nlattr *userdata;
 
     userdata = nl_attr_find_nested(a, OVS_USERSPACE_ATTR_USERDATA);
-#ifdef THREADED
-    pthread_mutex_lock(&dp->table_mutex);
-#endif
+    LOCK(&dp->table_mutex);
     dp_netdev_output_userspace(dp, packet, DPIF_UC_ACTION, key, userdata);
-#ifdef THREADED
-    pthread_mutex_unlock(&dp->table_mutex);
-#endif
+    UNLOCK(&dp->table_mutex);
 }
 
 static void
