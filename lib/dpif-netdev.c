@@ -1190,7 +1190,7 @@ dpif_netdev_recv(struct dpif *dpif, struct dpif_upcall *upcall,
         /* Read a byte from the pipe to signal that a packet has been
          * received. */
         if (read(dp->pipe[0], &c, 1) < 0) {
-            VLOG_ERR("Error reading from the pipe: %s", strerror(errno));
+            VLOG_ERR("Pipe read error (from datapath): %s", strerror(errno));
         }
         pthread_mutex_unlock(&dp->table_mutex);
 #endif
@@ -1428,10 +1428,10 @@ dp_thread_body(void *args OVS_UNUSED)
             dp = (struct dp_netdev *)node->data;
             if (dp->pipe_fd && (dp->pipe_fd->revents & POLLIN)) {
                 VLOG_DBG("Signalled from main thread");
-                while ( (error = read(dp->pipe[1], readbuf, sizeof(readbuf))) > 0)
+                while ((error = read(dp->pipe[1], readbuf, sizeof(readbuf))) > 0)
                         ;
                 if (error < 0) {
-                   VLOG_ERR("Error reading from the pipe: %s", strerror(errno));
+                    VLOG_ERR("Pipe read error (to datapath): %s", strerror(errno));
                 }
             }
             arg.dp = dp;
