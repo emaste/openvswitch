@@ -251,7 +251,6 @@ static int
 netdev_dummy_dispatch(struct netdev *netdev_, int batch, pkt_handler h,
                       u_char *user)
 {
-    int ret;
     int i;
     struct netdev_dummy *netdev = netdev_dummy_cast(netdev_);
     struct ofpbuf *packet;
