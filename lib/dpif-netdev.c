@@ -1430,7 +1430,7 @@ dp_thread_body(void *args OVS_UNUSED)
                 VLOG_DBG("Signalled from main thread");
                 while ((error = read(dp->pipe[1], readbuf, sizeof(readbuf))) > 0)
                         ;
-                if (error < 0) {
+                if (error < 0 && errno != EAGAIN) {
                     VLOG_ERR("Pipe read error (to datapath): %s", strerror(errno));
                 }
             }
