@@ -2421,9 +2421,9 @@ netdev_linux_change_seq(const struct netdev *netdev)
 }
 
 #ifdef THREADED
-#define THREADED_NULL NULL, NULL,
+#	define THREADED_METHODS netdev_linux_dispatch, netdev_linux_get_fd,		
 #else
-#define THREADED_NULL
+#	define THREADED_METHODS
 #endif
 
 #define NETDEV_LINUX_CLASS(NAME, CREATE, GET_STATS, SET_STATS,  \
@@ -2446,7 +2446,7 @@ netdev_linux_change_seq(const struct netdev *netdev)
     netdev_linux_listen,                                        \
     netdev_linux_recv,                                          \
     netdev_linux_recv_wait,                                     \
-    THREADED_NULL                                               \
+    THREADED_METHODS						\
     netdev_linux_drain,                                         \
                                                                 \
     netdev_linux_send,                                          \
