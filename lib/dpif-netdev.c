@@ -112,6 +112,7 @@ struct dp_netdev {
      */
 
     int pipe[2];    /* signal a packet on the queue */
+    int rpipe[2];    /* signal a packet on the queue (reverse direction) */
     struct pollfd *pipe_fd;
 
     pthread_mutex_t table_mutex;    /* mutex for the flow table */
@@ -313,8 +314,19 @@ create_dp_netdev(const char *name, const struct dpif_class *class,
                  strerror(errno));
         return errno;
     }
+    error = pipe(dp->rpipe);
+    if (error) {
+        VLOG_ERR("Unable to create datapath thread reverse pipe: %s", strerror(errno));
+        return errno;
+    }
+    if (set_nonblocking(dp->rpipe[0]) || set_nonblocking(dp->rpipe[1])) {
+        VLOG_ERR("Unable to set nonblocking on datapath thread pipe: %s",
+                 strerror(errno));
+        return errno;
+    }
     dp->pipe_fd = NULL;
-    VLOG_DBG("Datapath thread pipe created (%d, %d)", dp->pipe[0], dp->pipe[1]);
+    VLOG_DBG("Datapath thread pipes created (%d, %d) (%d, %d)",
+    	dp->pipe[0], dp->pipe[1], dp->rpipe[0], dp->rpipe[1]);
 
     pthread_mutex_init(&dp->table_mutex, NULL);
     pthread_mutex_init(&dp->port_list_mutex, NULL);
@@ -1341,7 +1353,7 @@ dp_thread_body(void *args OVS_UNUSED)
         /* build the structure for poll */
         SHASH_FOR_EACH(node, &dp_netdevs) {
             dp = (struct dp_netdev *)node->data;
-            fds[n_fds].fd = dp->pipe[1];
+            fds[n_fds].fd = dp->rpipe[0];
             fds[n_fds].events = POLLIN;
             dp->pipe_fd = &fds[n_fds];
             n_fds++;
@@ -1436,7 +1448,7 @@ dp_netdev_output_port(struct dp_netdev *dp, struct ofpbuf *packet,
     if (p) {
         netdev_send(p->netdev, packet);
 #ifdef THREADED
-        if (write(dp->pipe[0], &c, 1) < 0) {
+        if (write(dp->rpipe[1], &c, 1) < 0) {
             VLOG_ERR("Pipe write error (to datapath): %s", strerror(errno));
         }
 #endif
@@ -1491,7 +1503,7 @@ dp_netdev_output_userspace(struct dp_netdev *dp, const struct ofpbuf *packet,
 
 #ifdef THREADED
     /* Write a byte on the pipe to advertise that a packet is ready. */
-    if (write(dp->pipe[1], &c, 1) < 0) {
+    if (write(dp->pipe[1], &c, 1) < 0 && errno != EAGAIN) {
         VLOG_ERR("Pipe write error (from datapath): %s", strerror(errno));
     }
 #endif
