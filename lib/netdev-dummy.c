@@ -139,30 +139,11 @@ netdev_dummy_open(struct netdev_dev *netdev_dev_, struct netdev **netdevp)
 {
     struct netdev_dev_dummy *netdev_dev = netdev_dev_dummy_cast(netdev_dev_);
     struct netdev_dummy *netdev;
-#ifdef THREADED
-    int error;
-#endif
 
     netdev = xmalloc(sizeof *netdev);
     netdev_init(&netdev->netdev, netdev_dev_);
     list_init(&netdev->recv_queue);
     netdev->listening = false;
-#ifdef THREADED
-    error = pipe(netdev->s_pipe);
-    if (error) {
-        VLOG_ERR("Unable to create dummy pipe: %s", strerror(errno));
-        free(netdev);
-        return errno;
-    }
-    if (set_nonblocking(netdev->s_pipe[0]) ||
-        set_nonblocking(netdev->s_pipe[1])) {
-        VLOG_ERR("Unable to set nonblocking on dummy pipe: %s",
-                 strerror(errno));
-        free(netdev);
-        return errno;
-    }
-    pthread_mutex_init(&netdev->queue_mutex, NULL);
-#endif
 
     *netdevp = &netdev->netdev;
     list_push_back(&netdev_dev->devs, &netdev->node);
@@ -177,10 +158,10 @@ netdev_dummy_close(struct netdev *netdev_)
     ofpbuf_list_delete(&netdev->recv_queue);
 #ifdef THREADED
     if (netdev->listening) {
-	    close(netdev->s_pipe[0]);
-	    close(netdev->s_pipe[1]);
+	close(netdev->s_pipe[0]);
+	close(netdev->s_pipe[1]);
+        pthread_mutex_destroy(&netdev->queue_mutex);
     }
-    pthread_mutex_destroy(&netdev->queue_mutex);
 #endif
     free(netdev);
 }
@@ -189,6 +170,27 @@ static int
 netdev_dummy_listen(struct netdev *netdev_)
 {
     struct netdev_dummy *netdev = netdev_dummy_cast(netdev_);
+#ifdef THREADED
+    int error;
+
+    if (netdev->listening)
+        return 0;
+
+    error = pipe(netdev->s_pipe);
+    if (error) {
+        VLOG_ERR("Unable to create dummy pipe: %s", strerror(errno));
+        return errno;
+    }
+    if (set_nonblocking(netdev->s_pipe[0]) ||
+        set_nonblocking(netdev->s_pipe[1])) {
+        VLOG_ERR("Unable to set nonblocking on dummy pipe: %s",
+                 strerror(errno));
+        close(netdev->s_pipe[0]);
+        close(netdev->s_pipe[1]);
+        return errno;
+    }
+    pthread_mutex_init(&netdev->queue_mutex, NULL);
+#endif
     netdev->listening = true;
     return 0;
 }
