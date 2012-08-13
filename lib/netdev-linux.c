@@ -2510,7 +2510,7 @@ netdev_linux_change_seq(const struct netdev *netdev)
 }
 
 #ifdef THREADED
-#	define THREADED_METHODS netdev_linux_dispatch, netdev_linux_get_fd,		
+#	define THREADED_METHODS netdev_linux_dispatch, netdev_linux_get_fd,
 #else
 #	define THREADED_METHODS
 #endif

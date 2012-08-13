@@ -326,7 +326,7 @@ create_dp_netdev(const char *name, const struct dpif_class *class,
     }
     dp->pipe_fd = NULL;
     VLOG_DBG("Datapath thread pipes created (%d, %d) (%d, %d)",
-    	dp->pipe[0], dp->pipe[1], dp->rpipe[0], dp->rpipe[1]);
+        dp->pipe[0], dp->pipe[1], dp->rpipe[0], dp->rpipe[1]);
 
     pthread_mutex_init(&dp->table_mutex, NULL);
     pthread_mutex_init(&dp->port_list_mutex, NULL);
