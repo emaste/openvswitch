@@ -1133,6 +1133,8 @@ dpif_netdev_recv(struct dpif *dpif, struct dpif_upcall *upcall,
 
         ofpbuf_uninit(buf);
         *buf = *upcall->packet;
+        free(upcall->packet);
+        upcall->packet = buf;
 
 #ifdef THREADED
         /* Read a byte from the pipe to signal that a packet has been
