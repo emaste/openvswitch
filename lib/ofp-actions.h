@@ -493,4 +493,44 @@ OFPACTS
 void ofpact_update_len(struct ofpbuf *, struct ofpact *);
 void ofpact_pad(struct ofpbuf *);
 
+/* OpenFlow 1.1 instructions.
+ * The order is sorted in execution order. Not in the value of OFPIT11_xxx.
+ * It is enforced on parser from text string.
+ */
+#define OVS_INSTRUCTIONS                                    \
+    DEFINE_INST(OFPIT11_APPLY_ACTIONS,                      \
+                ofp11_instruction_actions,        true,     \
+                "apply_actions")                            \
+                                                            \
+    DEFINE_INST(OFPIT11_CLEAR_ACTIONS,                      \
+                ofp11_instruction,                false,    \
+                "clear_actions")                            \
+                                                            \
+    DEFINE_INST(OFPIT11_WRITE_ACTIONS,                      \
+                ofp11_instruction_actions,        true,     \
+                "write_actions")                            \
+                                                            \
+    DEFINE_INST(OFPIT11_WRITE_METADATA,                     \
+                ofp11_instruction_write_metadata, false,    \
+                "write_metadata")                           \
+                                                            \
+    DEFINE_INST(OFPIT11_GOTO_TABLE,                         \
+                ofp11_instruction_goto_table,     false,    \
+                "goto_table")
+
+enum ovs_instruction_type {
+#define DEFINE_INST(ENUM, STRUCT, EXTENSIBLE, NAME) OVSINST_##ENUM,
+    OVS_INSTRUCTIONS
+#undef DEFINE_INST
+};
+
+enum {
+#define DEFINE_INST(ENUM, STRUCT, EXTENSIBLE, NAME) + 1
+    N_OVS_INSTRUCTIONS = OVS_INSTRUCTIONS
+#undef DEFINE_INST
+};
+
+const char *ofpact_instruction_name_from_type(enum ovs_instruction_type type);
+int ofpact_instruction_type_from_name(const char *name);
+
 #endif /* ofp-actions.h */

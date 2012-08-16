@@ -1316,6 +1316,14 @@ get_cfm_fault(const struct ofport *ofport_)
 }
 
 static int
+get_cfm_opup(const struct ofport *ofport_)
+{
+    struct ofport_dpif *ofport = ofport_dpif_cast(ofport_);
+
+    return ofport->cfm ? cfm_get_opup(ofport->cfm) : -1;
+}
+
+static int
 get_cfm_remote_mpids(const struct ofport *ofport_, const uint64_t **rmps,
                      size_t *n_rmps)
 {
@@ -2464,9 +2472,14 @@ port_run(struct ofport_dpif *ofport)
 
     port_run_fast(ofport);
     if (ofport->cfm) {
+        int cfm_opup = cfm_get_opup(ofport->cfm);
+
         cfm_run(ofport->cfm);
-        enable = enable && !cfm_get_fault(ofport->cfm)
-            && cfm_get_opup(ofport->cfm);
+        enable = enable && !cfm_get_fault(ofport->cfm);
+
+        if (cfm_opup >= 0) {
+            enable = enable && cfm_opup;
+        }
     }
 
     if (ofport->bundle) {
@@ -4242,20 +4255,33 @@ subfacet_create(struct facet *facet, enum odp_key_fitness key_fitness,
     uint32_t key_hash = odp_flow_key_hash(key, key_len);
     struct subfacet *subfacet;
 
-    subfacet = subfacet_find__(ofproto, key, key_len, key_hash, &facet->flow);
-    if (subfacet) {
-        if (subfacet->facet == facet) {
-            return subfacet;
+    if (list_is_empty(&facet->subfacets)) {
+        subfacet = &facet->one_subfacet;
+
+        /* This subfacet should conceptually be created, and have its first
+         * packet pass through, at the same time that its facet was created.
+         * If we called time_msec() here, then the subfacet could look
+         * (occasionally) as though it was used some time after the facet was
+         * used.  That can make a one-packet flow look like it has a nonzero
+         * duration, which looks odd in e.g. NetFlow statistics. */
+        subfacet->used = facet->used;
+    } else {
+        subfacet = subfacet_find__(ofproto, key, key_len, key_hash,
+                                   &facet->flow);
+        if (subfacet) {
+            if (subfacet->facet == facet) {
+                return subfacet;
+            }
+
+            /* This shouldn't happen. */
+            VLOG_ERR_RL(&rl, "subfacet with wrong facet");
+            subfacet_destroy(subfacet);
         }
 
-        /* This shouldn't happen. */
-        VLOG_ERR_RL(&rl, "subfacet with wrong facet");
-        subfacet_destroy(subfacet);
+        subfacet = xmalloc(sizeof *subfacet);
+        subfacet->used = time_msec();
     }
 
-    subfacet = (list_is_empty(&facet->subfacets)
-                ? &facet->one_subfacet
-                : xmalloc(sizeof *subfacet));
     hmap_insert(&ofproto->subfacets, &subfacet->hmap_node, key_hash);
     list_push_back(&facet->subfacets, &subfacet->list_node);
     subfacet->facet = facet;
@@ -4267,7 +4293,6 @@ subfacet_create(struct facet *facet, enum odp_key_fitness key_fitness,
         subfacet->key = NULL;
         subfacet->key_len = 0;
     }
-    subfacet->used = time_msec();
     subfacet->dp_packet_count = 0;
     subfacet->dp_byte_count = 0;
     subfacet->actions_len = 0;
@@ -7168,6 +7193,7 @@ const struct ofproto_class ofproto_dpif_class = {
     set_sflow,
     set_cfm,
     get_cfm_fault,
+    get_cfm_opup,
     get_cfm_remote_mpids,
     get_cfm_health,
     set_stp,
