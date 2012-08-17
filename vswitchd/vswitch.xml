@@ -802,8 +802,13 @@
 
     <group title="Bonding Configuration">
       <p>A port that has more than one interface is a ``bonded port.'' Bonding
-      allows for load balancing and fail-over.  Some kinds of bonding will
-      work with any kind of upstream switch:</p>
+      allows for load balancing and fail-over.</p>
+
+      <p>
+        The following types of bonding will work with any kind of upstream
+        switch.  On the upstream switch, do not configure the interfaces as a
+        bond:
+      </p>
 
       <dl>
         <dt><code>balance-slb</code></dt>
@@ -815,7 +820,8 @@
         <dt><code>active-backup</code></dt>
         <dd>
           Assigns all flows to one slave, failing over to a backup slave when
-          the active slave is disabled.
+          the active slave is disabled.  This is the only bonding mode in which
+          interfaces may be plugged into different upstream switches.
         </dd>
       </dl>
 
@@ -890,7 +896,7 @@
 
         <column name="bond_updelay">
           <p>
-            The number of milliseconds for which carrier must stay up on an
+            The number of milliseconds for which the link must stay up on an
             interface before the interface is considered to be up.  Specify
             <code>0</code> to enable the interface immediately.
           </p>
@@ -903,7 +909,7 @@
         </column>
 
         <column name="bond_downdelay">
-          The number of milliseconds for which carrier must stay down on an
+          The number of milliseconds for which the link must stay down on an
           interface before the interface is considered to be down.  Specify
           <code>0</code> to disable the interface immediately.
         </column>
@@ -956,12 +962,10 @@
         </column>
       </group>
 
-      <group title="SLB Configuration">
+      <group title="Rebalancing Configuration">
         <p>
           These settings control behavior when a bond is in
-          <code>balance-slb</code> mode, regardless of whether the bond was
-          intentionally configured in SLB mode or it fell back to SLB mode
-          because LACP negotiation failed.
+          <code>balance-slb</code> or <code>balance-tcp</code> mode.
         </p>
 
         <column name="other_config" key="bond-rebalance-interval"
@@ -970,7 +974,7 @@
           successive attempts to rebalance the bond, that is, to move flows
           from one interface on the bond to another in an attempt to keep usage
           of each interface roughly equal.  If zero, load balancing is disabled
-          on the bond (carrier status changes still cause flows to move).  If
+          on the bond (link failure still cause flows to move).  If
           less than 1000ms, the rebalance interval will be 1000ms.
         </column>
       </group>

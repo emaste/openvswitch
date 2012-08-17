@@ -66,7 +66,7 @@ COVERAGE_DEFINE(facet_suppress);
 
 /* Maximum depth of flow table recursion (due to resubmit actions) in a
  * flow translation. */
-#define MAX_RESUBMIT_RECURSION 32
+#define MAX_RESUBMIT_RECURSION 64
 
 /* Number of implemented OpenFlow tables. */
 enum { N_TABLES = 255 };
@@ -3794,7 +3794,8 @@ facet_is_controller_flow(struct facet *facet)
         const struct ofpact *ofpacts = rule->ofpacts;
         size_t ofpacts_len = rule->ofpacts_len;
 
-        if (ofpacts->type == OFPACT_CONTROLLER &&
+        if (ofpacts_len > 0 &&
+            ofpacts->type == OFPACT_CONTROLLER &&
             ofpact_next(ofpacts) >= ofpact_end(ofpacts, ofpacts_len)) {
             return true;
         }
@@ -5159,7 +5160,7 @@ execute_controller_action(struct action_xlate_ctx *ctx, int len,
 }
 
 static bool
-compose_dec_ttl(struct action_xlate_ctx *ctx)
+compose_dec_ttl(struct action_xlate_ctx *ctx, struct ofpact_cnt_ids *ids)
 {
     if (ctx->flow.dl_type != htons(ETH_TYPE_IP) &&
         ctx->flow.dl_type != htons(ETH_TYPE_IPV6)) {
@@ -5170,7 +5171,12 @@ compose_dec_ttl(struct action_xlate_ctx *ctx)
         ctx->flow.nw_ttl--;
         return false;
     } else {
-        execute_controller_action(ctx, UINT16_MAX, OFPR_INVALID_TTL, 0);
+        size_t i;
+
+        for (i = 0; i < ids->n_controllers; i++) {
+            execute_controller_action(ctx, UINT16_MAX, OFPR_INVALID_TTL,
+                                      ids->cnt_ids[i]);
+        }
 
         /* Stop processing for current table. */
         return true;
@@ -5530,7 +5536,7 @@ do_xlate_actions(const struct ofpact *ofpacts, size_t ofpacts_len,
             break;
 
         case OFPACT_DEC_TTL:
-            if (compose_dec_ttl(ctx)) {
+            if (compose_dec_ttl(ctx, ofpact_get_DEC_TTL(a))) {
                 goto out;
             }
             break;
