@@ -67,7 +67,7 @@ struct netdev_dummy {
     bool listening;
 #ifdef THREADED
     pthread_mutex_t queue_mutex;
-    int s_pipe[2];		/* used to signal packet arrivals */
+    int s_pipe[2];              /* used to signal packet arrivals */
 #endif
 };
 
@@ -188,8 +188,8 @@ netdev_dummy_close(struct netdev *netdev_)
     ofpbuf_list_delete(&netdev->recv_queue);
 #ifdef THREADED
     if (netdev->listening) {
-	close(netdev->s_pipe[0]);
-	close(netdev->s_pipe[1]);
+        close(netdev->s_pipe[0]);
+        close(netdev->s_pipe[1]);
         pthread_mutex_destroy(&netdev->queue_mutex);
     }
 #endif
