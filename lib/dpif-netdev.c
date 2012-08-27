@@ -97,6 +97,49 @@ struct dp_netdev_queue {
     unsigned int head, tail;
 };
 
+#ifdef THREADED
+struct dp_netdev_notifier {
+    int pipe[2];  
+};
+
+static int dp_netdev_notifier_init(struct dp_netdev_notifier *);
+static int dp_netdev_notifier_poll(struct dp_netdev_notifier *dn, struct pollfd *pfd);
+static int dp_netdev_notifier_notify(struct dp_netdev_notifier *);
+static int dp_netdev_notifier_ack(struct dp_netdev_notifier *);
+static int dp_netdev_notifier_ack1(struct dp_netdev_notifier *);
+#else
+struct dp_netdev_notifier {
+    /* nothing */
+};
+
+static int dp_netdev_notifier_init(struct dp_netdev_notifier *dn OVS_UNUSED)
+{
+    return 0;
+}
+/* unused
+static int dp_netdev_notifier_poll(struct dp_netdev_notifier *dn OVS_UNUSED,
+		struct pollfd *pfd OVS_UNUSED)
+{
+    return 0;
+}
+*/
+static int dp_netdev_notifier_notify(struct dp_netdev_notifier *dn OVS_UNUSED)
+{
+    return 0;
+}
+/*
+static int dp_netdev_notifier_ack(struct dp_netdev_notifier *dn OVS_UNUSED)
+{
+    return 0;
+}
+*/
+static int dp_netdev_notifier_ack1(struct dp_netdev_notifier *dn OVS_UNUSED)
+{
+    return 0;
+}
+#endif
+
+
 /* Datapath based on the network device interface from netdev.h. */
 struct dp_netdev {
     const struct dpif_class *class;
@@ -104,16 +147,10 @@ struct dp_netdev {
     int open_cnt;
     bool destroyed;
 
+    struct dp_netdev_notifier packet_notifier;    /* signal a packet on the queue */
+    struct dp_netdev_notifier notifier;
 #ifdef THREADED
-    /* The pipe is used to signal the presence of a packet on the queue.
-     * - dpif_netdev_recv_wait() waits on p[0]
-     * - dpif_netdev_recv() extract from queue and read p[0]
-     * - dp_netdev_output_control() send to queue and write p[1]
-     */
-
-    int pipe[2];    /* signal a packet on the queue */
-    int rpipe[2];    /* signal a packet on the queue (reverse direction) */
-    struct pollfd *pipe_fd;
+    struct pollfd *notifier_fd;
 
     pthread_mutex_t table_mutex;    /* mutex for the flow table */
     pthread_mutex_t port_list_mutex;    /* port list mutex */
@@ -250,30 +287,10 @@ create_dp_netdev(const char *name, const struct dpif_class *class,
     dp->class = class;
     dp->name = xstrdup(name);
     dp->open_cnt = 0;
+    dp_netdev_notifier_init(&dp->packet_notifier);
+    dp_netdev_notifier_init(&dp->notifier);
 #ifdef THREADED
-    error = pipe(dp->pipe);
-    if (error) {
-        VLOG_ERR("Unable to create datapath thread pipe: %s", strerror(errno));
-        return errno;
-    }
-    if (set_nonblocking(dp->pipe[0]) || set_nonblocking(dp->pipe[1])) {
-        VLOG_ERR("Unable to set nonblocking on datapath thread pipe: %s",
-                 strerror(errno));
-        return errno;
-    }
-    error = pipe(dp->rpipe);
-    if (error) {
-        VLOG_ERR("Unable to create datapath thread reverse pipe: %s", strerror(errno));
-        return errno;
-    }
-    if (set_nonblocking(dp->rpipe[0]) || set_nonblocking(dp->rpipe[1])) {
-        VLOG_ERR("Unable to set nonblocking on datapath thread pipe: %s",
-                 strerror(errno));
-        return errno;
-    }
-    dp->pipe_fd = NULL;
-    VLOG_DBG("Datapath thread pipes created (%d, %d) (%d, %d)",
-        dp->pipe[0], dp->pipe[1], dp->rpipe[0], dp->rpipe[1]);
+    dp->notifier_fd = NULL;
 
     pthread_mutex_init(&dp->table_mutex, NULL);
     pthread_mutex_init(&dp->port_list_mutex, NULL);
@@ -296,6 +313,74 @@ create_dp_netdev(const char *name, const struct dpif_class *class,
 }
 
 #ifdef THREADED
+
+static int
+dp_netdev_notifier_init(struct dp_netdev_notifier *dn)
+{
+    int error = pipe(dn->pipe);
+    if (error) {
+        VLOG_ERR("Unable to create notifier: %s", strerror(errno));
+        return errno;
+    }
+    if (set_nonblocking(dn->pipe[0]) || set_nonblocking(dn->pipe[1])) {
+        VLOG_ERR("Unable to set nonblocking on notifier pipe: %s",
+                 strerror(errno));
+        return errno;
+    }
+    VLOG_DBG("Notifier pipes created (%d, %d)", dn->pipe[0], dn->pipe[1]);
+    return 0;
+}
+
+static int
+dp_netdev_notifier_poll(struct dp_netdev_notifier *dn, struct pollfd *pfd)
+{
+    pfd->fd = dn->pipe[0];
+    pfd->events = POLLIN;
+    return 1;
+}
+
+static int
+dp_netdev_notifier_ack(struct dp_netdev_notifier *dn)
+{
+    int error;
+    char readbuf[1024];
+
+    while ((error = read(dn->pipe[0], readbuf, sizeof(readbuf))) > 0)
+            ;
+    if (error < 0 && errno != EAGAIN) {
+        VLOG_ERR("Pipe read error: %s", strerror(errno));
+        return error;
+    }
+    return 0;
+}
+
+static int
+dp_netdev_notifier_ack1(struct dp_netdev_notifier *dn)
+{
+    int error;
+    char c;
+
+    error = read(dn->pipe[0], &c, 1);
+    if (error < 0 && errno != EAGAIN) {
+        VLOG_ERR("Pipe read error: %s", strerror(errno));
+        return error;
+    }
+    return 0;
+}
+
+
+static int
+dp_netdev_notifier_notify(struct dp_netdev_notifier *dn)
+{
+    char c = 0;
+
+    if (write(dn->pipe[1], &c, 1) < 0) {
+        VLOG_ERR("Pipe write error (to datapath): %s", strerror(errno));
+	return errno;
+    }
+    return 0;
+}
+
 static void * dp_thread_body(void *args OVS_UNUSED);
 
 /* This is the function that is called in response of a fatal signal (e.g.
@@ -1123,11 +1208,8 @@ dpif_netdev_recv(struct dpif *dpif, struct dpif_upcall *upcall,
                  struct ofpbuf *buf)
 {
     struct dp_netdev_queue *q;
-#ifdef THREADED
     struct dp_netdev *dp = get_dp_netdev(dpif);
-    char c;
     LOCK(&dp->table_mutex);
-#endif
     q = find_nonempty_queue(dpif);
     if (q) {
         struct dp_netdev_upcall *u = &q->upcalls[q->tail++ & QUEUE_MASK];
@@ -1138,14 +1220,8 @@ dpif_netdev_recv(struct dpif *dpif, struct dpif_upcall *upcall,
         ofpbuf_uninit(buf);
         *buf = u->buf;
 
-#ifdef THREADED
-        /* Read a byte from the pipe to signal that a packet has been
-         * received. */
-        if (read(dp->pipe[0], &c, 1) < 0) {
-            VLOG_ERR("Pipe read error (from datapath): %s", strerror(errno));
-        }
+	dp_netdev_notifier_ack1(&dp->packet_notifier);
         UNLOCK(&dp->table_mutex);
-#endif
         return 0;
     } else {
         UNLOCK(&dp->table_mutex);
@@ -1158,8 +1234,11 @@ dpif_netdev_recv_wait(struct dpif *dpif)
 {
 #ifdef THREADED
     struct dp_netdev *dp = get_dp_netdev(dpif);
+    struct pollfd pfd;
 
-    poll_fd_wait(dp->pipe[0], POLLIN);
+    if (dp_netdev_notifier_poll(&dp->packet_notifier, &pfd)) {
+        poll_fd_wait(pfd.fd, pfd.events);
+    }
 #else
     if (find_nonempty_queue(dpif)) {
         poll_immediate_wake();
@@ -1223,8 +1302,11 @@ dp_netdev_port_input(struct dp_netdev *dp, struct dp_netdev_port *port,
 
 #ifdef THREADED
 static void
-dpif_netdev_run(struct dpif *dpif OVS_UNUSED)
+dpif_netdev_run(struct dpif *dpif)
 {
+    struct dp_netdev *dp = get_dp_netdev(dpif);
+
+    dp_netdev_notifier_notify(&dp->notifier);
 }
 
 static void
@@ -1307,7 +1389,6 @@ dp_thread_body(void *args OVS_UNUSED)
     int n_fds;
     uint32_t batch = 50; /* max number of pkts processed by the dispatch */
     int processed;     /* actual number of pkts processed by the dispatch */
-    char readbuf[1024];
 
     sigset_t sigmask;
 
@@ -1333,12 +1414,12 @@ dp_thread_body(void *args OVS_UNUSED)
         /* build the structure for poll */
         SHASH_FOR_EACH(node, &dp_netdevs) {
             dp = (struct dp_netdev *)node->data;
-            fds[n_fds].fd = dp->rpipe[0];
-            fds[n_fds].events = POLLIN;
-            dp->pipe_fd = &fds[n_fds];
-            n_fds++;
+	    if (dp_netdev_notifier_poll(&dp->notifier, &fds[n_fds])) {
+		dp->notifier_fd = &fds[n_fds];
+	        n_fds++;
+            }
             if (n_fds >= sizeof(fds) / sizeof(fds[0])) {
-                VLOG_ERR("Too many fds for poll adding pipe_fd");
+                VLOG_ERR("Too many fds for poll adding notifier");
                 break;
             }
             LOCK(&dp->port_list_mutex);
@@ -1356,8 +1437,7 @@ dp_thread_body(void *args OVS_UNUSED)
             UNLOCK(&dp->port_list_mutex);
         }
 
-        error = poll(fds, n_fds, 2000);
-        VLOG_DBG("dp_thread_body poll wakeup with cnt=%d", error);
+        error = poll(fds, n_fds, -1);
 
         if (error < 0) {
             if (errno == EINTR) {
@@ -1372,14 +1452,10 @@ dp_thread_body(void *args OVS_UNUSED)
 
         SHASH_FOR_EACH (node, &dp_netdevs) {
             dp = (struct dp_netdev *)node->data;
-            if (dp->pipe_fd && (dp->pipe_fd->revents & POLLIN)) {
+            if (dp->notifier_fd && (dp->notifier_fd->revents & POLLIN)) {
                 VLOG_DBG("Signalled from main thread");
-                while ((error = read(dp->rpipe[0], readbuf, sizeof(readbuf))) > 0)
-                        ;
-                if (error < 0 && errno != EAGAIN) {
-                    VLOG_ERR("Pipe read error (to datapath): %s", strerror(errno));
-                }
-            }
+	        dp_netdev_notifier_ack(&dp->notifier);
+	    }
             arg.dp = dp;
             LOCK(&dp->port_list_mutex);
             LIST_FOR_EACH (port, node, &dp->port_list) {
@@ -1423,15 +1499,10 @@ dp_netdev_output_port(struct dp_netdev *dp, struct ofpbuf *packet,
                       uint16_t out_port)
 {
     struct dp_netdev_port *p = dp->ports[out_port];
-    char c = 0;
 
     if (p) {
         netdev_send(p->netdev, packet);
-#ifdef THREADED
-        if (write(dp->rpipe[1], &c, 1) < 0) {
-            VLOG_ERR("Pipe write error (to datapath): %s", strerror(errno));
-        }
-#endif
+	dp_netdev_notifier_notify(&dp->notifier);
     }
 }
 
@@ -1471,12 +1542,7 @@ dp_netdev_output_userspace(struct dp_netdev *dp, const struct ofpbuf *packet,
     upcall->key_len = key_len;
     upcall->userdata = arg;
 
-#ifdef THREADED
-    /* Write a byte on the pipe to advertise that a packet is ready. */
-    if (write(dp->pipe[1], &c, 1) < 0 && errno != EAGAIN) {
-        VLOG_ERR("Pipe write error (from datapath): %s", strerror(errno));
-    }
-#endif
+    dp_netdev_notifier_notify(&dp->packet_notifier);
 
     return 0;
 }
