@@ -118,7 +118,7 @@ static int dp_netdev_notifier_init(struct dp_netdev_notifier *dn OVS_UNUSED)
 }
 /* unused
 static int dp_netdev_notifier_poll(struct dp_netdev_notifier *dn OVS_UNUSED,
-		struct pollfd *pfd OVS_UNUSED)
+    struct pollfd *pfd OVS_UNUSED)
 {
     return 0;
 }
@@ -376,7 +376,7 @@ dp_netdev_notifier_notify(struct dp_netdev_notifier *dn)
 
     if (write(dn->pipe[1], &c, 1) < 0) {
         VLOG_ERR("Pipe write error (to datapath): %s", strerror(errno));
-	return errno;
+        return errno;
     }
     return 0;
 }
@@ -1220,7 +1220,7 @@ dpif_netdev_recv(struct dpif *dpif, struct dpif_upcall *upcall,
         ofpbuf_uninit(buf);
         *buf = u->buf;
 
-	dp_netdev_notifier_ack1(&dp->packet_notifier);
+        dp_netdev_notifier_ack1(&dp->packet_notifier);
         UNLOCK(&dp->table_mutex);
         return 0;
     } else {
@@ -1414,9 +1414,9 @@ dp_thread_body(void *args OVS_UNUSED)
         /* build the structure for poll */
         SHASH_FOR_EACH(node, &dp_netdevs) {
             dp = (struct dp_netdev *)node->data;
-	    if (dp_netdev_notifier_poll(&dp->notifier, &fds[n_fds])) {
-		dp->notifier_fd = &fds[n_fds];
-	        n_fds++;
+            if (dp_netdev_notifier_poll(&dp->notifier, &fds[n_fds])) {
+                dp->notifier_fd = &fds[n_fds];
+                n_fds++;
             }
             if (n_fds >= sizeof(fds) / sizeof(fds[0])) {
                 VLOG_ERR("Too many fds for poll adding notifier");
@@ -1454,8 +1454,8 @@ dp_thread_body(void *args OVS_UNUSED)
             dp = (struct dp_netdev *)node->data;
             if (dp->notifier_fd && (dp->notifier_fd->revents & POLLIN)) {
                 VLOG_DBG("Signalled from main thread");
-	        dp_netdev_notifier_ack(&dp->notifier);
-	    }
+                dp_netdev_notifier_ack(&dp->notifier);
+            }
             arg.dp = dp;
             LOCK(&dp->port_list_mutex);
             LIST_FOR_EACH (port, node, &dp->port_list) {
@@ -1502,7 +1502,7 @@ dp_netdev_output_port(struct dp_netdev *dp, struct ofpbuf *packet,
 
     if (p) {
         netdev_send(p->netdev, packet);
-	dp_netdev_notifier_notify(&dp->notifier);
+        dp_netdev_notifier_notify(&dp->notifier);
     }
 }
 
