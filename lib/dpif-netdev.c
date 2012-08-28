@@ -99,7 +99,7 @@ struct dp_netdev_queue {
 
 #ifdef THREADED
 struct dp_netdev_notifier {
-    int pipe[2];  
+    int pipe[2];
 };
 
 static int dp_netdev_notifier_init(struct dp_netdev_notifier *);
