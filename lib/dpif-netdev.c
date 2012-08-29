@@ -392,6 +392,12 @@ static void
 dpif_netdev_exit_hook(void *aux OVS_UNUSED)
 {
     if (pthread_cancel(thread_p) == 0) {
+        struct shash_node *node;
+        struct dp_netdev *dp;
+        SHASH_FOR_EACH(node, &dp_netdevs) {
+            dp = (struct dp_netdev *)node->data;
+            dp_netdev_notifier_notify(&dp->notifier);
+        }
         pthread_join(thread_p, NULL);
     }
 }
