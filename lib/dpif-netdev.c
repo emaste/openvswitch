@@ -1516,9 +1516,6 @@ dp_netdev_output_userspace(struct dp_netdev *dp, const struct ofpbuf *packet,
     struct dpif_upcall *upcall;
     struct ofpbuf *buf;
     size_t key_len;
-#ifdef THREADED
-    char c = 0;
-#endif
 
     if (q->head - q->tail >= MAX_QUEUE_LEN) {
         dp->n_lost++;
