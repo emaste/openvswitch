@@ -392,6 +392,12 @@ static void
 dpif_netdev_exit_hook(void *aux OVS_UNUSED)
 {
     if (pthread_cancel(thread_p) == 0) {
+        /*
+         * POSIX specifies that poll is a thread cancellation point, but it
+         * appears that (at least on FreeBSD) we can wait indefinitely in the
+         * poll() in dp_thread_body.  As a workaround force a notify to exit
+         * the poll().
+         */
         struct shash_node *node;
         struct dp_netdev *dp;
         SHASH_FOR_EACH(node, &dp_netdevs) {
