@@ -66,9 +66,13 @@
 VLOG_DEFINE_THIS_MODULE(dpif_netdev);
 /* Pthread lock macros, nops in the non-threaded case. */
 #ifdef THREADED
+#define INIT_MUTEX(mutex) pthread_mutex_init(mutex, NULL)
+#define DESTROY_MUTEX(mutex) pthread_mutex_destroy(mutex)
 #define LOCK(mutex) pthread_mutex_lock(mutex)
 #define UNLOCK(mutex) pthread_mutex_unlock(mutex)
 #else
+#define INIT_MUTEX(mutex)
+#define DESTROY_MUTEX(mutex)
 #define LOCK(mutex)
 #define UNLOCK(mutex)
 #endif
@@ -289,11 +293,10 @@ create_dp_netdev(const char *name, const struct dpif_class *class,
     dp->open_cnt = 0;
     dp_netdev_notifier_init(&dp->packet_notifier);
     dp_netdev_notifier_init(&dp->notifier);
+    INIT_MUTEX(&dp->table_mutex);
+    INIT_MUTEX(&dp->port_list_mutex);
 #ifdef THREADED
     dp->notifier_fd = NULL;
-
-    pthread_mutex_init(&dp->table_mutex, NULL);
-    pthread_mutex_init(&dp->port_list_mutex, NULL);
 #endif
     for (i = 0; i < N_QUEUES; i++) {
         dp->queues[i].head = dp->queues[i].tail = 0;
@@ -410,6 +413,12 @@ dpif_netdev_init(void)
     }
     return error;
 }
+#else
+static int
+dpif_netdev_init(void)
+{
+    return 0;
+}
 #endif
 
 static int
@@ -438,9 +447,7 @@ dpif_netdev_open(const struct dpif_class *class, const char *name,
     }
 
     *dpifp = create_dpif_netdev(dp);
-#ifdef THREADED
-    dpif_netdev_init();
-#endif
+    dpif_netdev_init(); /* XXX check error */
     return 0;
 }
 
@@ -475,11 +482,9 @@ dp_netdev_free(struct dp_netdev *dp)
     LOCK(&dp->table_mutex);
     dp_netdev_purge_queues(dp);
     hmap_destroy(&dp->flow_table);
-#ifdef THREADED
     UNLOCK(&dp->table_mutex);
-    pthread_mutex_destroy(&dp->table_mutex);
-    pthread_mutex_destroy(&dp->port_list_mutex);
-#endif
+    DESTROY_MUTEX(&dp->table_mutex);
+    DESTROY_MUTEX(&dp->port_list_mutex);
     free(dp->name);
     free(dp);
 }
@@ -1253,10 +1258,8 @@ static void
 dpif_netdev_recv_purge(struct dpif *dpif)
 {
     struct dpif_netdev *dpif_netdev = dpif_netdev_cast(dpif);
-#ifdef THREADED
     struct dp_netdev *dp = get_dp_netdev(dpif);
     LOCK(&dp->table_mutex);
-#endif
     dp_netdev_purge_queues(dpif_netdev->dp);
     UNLOCK(&dp->table_mutex);
 }
