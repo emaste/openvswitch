@@ -110,6 +110,8 @@ static struct rule_dpif *rule_dpif_lookup(struct ofproto_dpif *,
 static struct rule_dpif *rule_dpif_lookup__(struct ofproto_dpif *,
                                             const struct flow *,
                                             uint8_t table);
+static struct rule_dpif *rule_dpif_miss_rule(struct ofproto_dpif *ofproto,
+                                             const struct flow *flow);
 
 static void rule_credit_stats(struct rule_dpif *,
                               const struct dpif_flow_stats *);
@@ -4545,7 +4547,6 @@ subfacet_update_stats(struct subfacet *subfacet,
 static struct rule_dpif *
 rule_dpif_lookup(struct ofproto_dpif *ofproto, const struct flow *flow)
 {
-    struct ofport_dpif *port;
     struct rule_dpif *rule;
 
     rule = rule_dpif_lookup__(ofproto, flow, 0);
@@ -4553,16 +4554,7 @@ rule_dpif_lookup(struct ofproto_dpif *ofproto, const struct flow *flow)
         return rule;
     }
 
-    port = get_ofp_port(ofproto, flow->in_port);
-    if (!port) {
-        VLOG_WARN_RL(&rl, "packet-in on unknown port %"PRIu16, flow->in_port);
-        return ofproto->miss_rule;
-    }
-
-    if (port->up.pp.config & OFPUTIL_PC_NO_PACKET_IN) {
-        return ofproto->no_packet_in_rule;
-    }
-    return ofproto->miss_rule;
+    return rule_dpif_miss_rule(ofproto, flow);
 }
 
 static struct rule_dpif *
@@ -4589,6 +4581,23 @@ rule_dpif_lookup__(struct ofproto_dpif *ofproto, const struct flow *flow,
         cls_rule = classifier_lookup(cls, flow);
     }
     return rule_dpif_cast(rule_from_cls_rule(cls_rule));
+}
+
+static struct rule_dpif *
+rule_dpif_miss_rule(struct ofproto_dpif *ofproto, const struct flow *flow)
+{
+    struct ofport_dpif *port;
+
+    port = get_ofp_port(ofproto, flow->in_port);
+    if (!port) {
+        VLOG_WARN_RL(&rl, "packet-in on unknown port %"PRIu16, flow->in_port);
+        return ofproto->miss_rule;
+    }
+
+    if (port->up.pp.config & OFPUTIL_PC_NO_PACKET_IN) {
+        return ofproto->no_packet_in_rule;
+    }
+    return ofproto->miss_rule;
 }
 
 static void
@@ -4995,7 +5004,7 @@ compose_output_action(struct action_xlate_ctx *ctx, uint16_t ofp_port)
 
 static void
 xlate_table_action(struct action_xlate_ctx *ctx,
-                   uint16_t in_port, uint8_t table_id)
+                   uint16_t in_port, uint8_t table_id, bool may_packet_in)
 {
     if (ctx->recurse < MAX_RESUBMIT_RECURSION) {
         struct ofproto_dpif *ofproto = ctx->ofproto;
@@ -5029,6 +5038,17 @@ xlate_table_action(struct action_xlate_ctx *ctx,
 
         if (ctx->resubmit_hook) {
             ctx->resubmit_hook(ctx, rule);
+        }
+
+        if (rule == NULL && may_packet_in) {
+            /* TODO:XXX
+             * check if table configuration flags
+             * OFPTC_TABLE_MISS_CONTROLLER, default.
+             * OFPTC_TABLE_MISS_CONTINUE,
+             * OFPTC_TABLE_MISS_DROP
+             * When OF1.0, OFPTC_TABLE_MISS_CONTINUE is used. What to do?
+             */
+            rule = rule_dpif_miss_rule(ofproto, &ctx->flow);
         }
 
         if (rule) {
@@ -5072,7 +5092,7 @@ xlate_ofpact_resubmit(struct action_xlate_ctx *ctx,
         table_id = ctx->table_id;
     }
 
-    xlate_table_action(ctx, in_port, table_id);
+    xlate_table_action(ctx, in_port, table_id, false);
 }
 
 static void
@@ -5189,7 +5209,7 @@ compose_dec_ttl(struct action_xlate_ctx *ctx, struct ofpact_cnt_ids *ids)
 
 static void
 xlate_output_action(struct action_xlate_ctx *ctx,
-                    uint16_t port, uint16_t max_len)
+                    uint16_t port, uint16_t max_len, bool may_packet_in)
 {
     uint16_t prev_nf_output_iface = ctx->nf_output_iface;
 
@@ -5200,7 +5220,7 @@ xlate_output_action(struct action_xlate_ctx *ctx,
         compose_output_action(ctx, ctx->flow.in_port);
         break;
     case OFPP_TABLE:
-        xlate_table_action(ctx, ctx->flow.in_port, 0);
+        xlate_table_action(ctx, ctx->flow.in_port, 0, may_packet_in);
         break;
     case OFPP_NORMAL:
         xlate_normal(ctx);
@@ -5240,7 +5260,7 @@ xlate_output_reg_action(struct action_xlate_ctx *ctx,
 {
     uint64_t port = mf_get_subfield(&or->src, &ctx->flow);
     if (port <= UINT16_MAX) {
-        xlate_output_action(ctx, port, or->max_len);
+        xlate_output_action(ctx, port, or->max_len, false);
     }
 }
 
@@ -5257,7 +5277,7 @@ xlate_enqueue_action(struct action_xlate_ctx *ctx,
     error = dpif_queue_to_priority(ctx->ofproto->dpif, queue_id, &priority);
     if (error) {
         /* Fall back to ordinary output action. */
-        xlate_output_action(ctx, enqueue->port, 0);
+        xlate_output_action(ctx, enqueue->port, 0, false);
         return;
     }
 
@@ -5352,7 +5372,7 @@ xlate_bundle_action(struct action_xlate_ctx *ctx,
     if (bundle->dst.field) {
         nxm_reg_load(&bundle->dst, port, &ctx->flow);
     } else {
-        xlate_output_action(ctx, port, 0);
+        xlate_output_action(ctx, port, 0, false);
     }
 }
 
@@ -5450,7 +5470,7 @@ do_xlate_actions(const struct ofpact *ofpacts, size_t ofpacts_len,
         switch (a->type) {
         case OFPACT_OUTPUT:
             xlate_output_action(ctx, ofpact_get_OUTPUT(a)->port,
-                                ofpact_get_OUTPUT(a)->max_len);
+                                ofpact_get_OUTPUT(a)->max_len, true);
             break;
 
         case OFPACT_CONTROLLER:
