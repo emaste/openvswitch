@@ -238,9 +238,6 @@ enum ofperr {
     /* OF1.2+(3,8).  Permissions error. */
     OFPERR_OFPBIC_EPERM,
 
-    /* NX1.1+(3,256).  Duplicate instruction type in set of instructions. */
-    OFPERR_NXBIC_DUP_TYPE,
-
 /* ## --------------- ## */
 /* ## OFPET_BAD_MATCH ## */
 /* ## --------------- ## */
@@ -271,7 +268,7 @@ enum ofperr {
     /* OF1.1+(4,6).  Unsupported field in the match. */
     OFPERR_OFPBMC_BAD_FIELD,
 
-    /* NX1.0(1,258), NX1.1(1,258), OF1.2+(4,7).  Unsupported value in a match
+    /* NX1.0(1,258), OF1.1+(4,7).  Unsupported value in a match
      * field. */
     OFPERR_OFPBMC_BAD_VALUE,
 
@@ -339,9 +336,6 @@ enum ofperr {
      * "command" field of struct ofp_flow_mod, when the nxt_flow_mod_table_id
      * extension is enabled. */
     OFPERR_NXFMFC_BAD_TABLE_ID,
-
-    /* NX1.0+(3,258).  'out_group' specified but groups not yet supported. */
-    OFPERR_NXFMFC_GROUPS_NOT_SUPPORTED,
 
 /* ## ---------------------- ## */
 /* ## OFPET_GROUP_MOD_FAILED ## */
