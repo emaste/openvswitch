@@ -2130,7 +2130,7 @@ handle_packet_out(struct ofconn *ofconn, const struct ofp_header *oh)
         goto exit_free_ofpacts;
     }
     if (po.in_port >= p->max_ports && po.in_port < OFPP_MAX) {
-        error = OFPERR_NXBRC_BAD_IN_PORT;
+        error = OFPERR_OFPBRC_BAD_PORT;
         goto exit_free_ofpacts;
     }
 
@@ -2363,7 +2363,7 @@ check_table_id(const struct ofproto *ofproto, uint8_t table_id)
 {
     return (table_id == 0xff || table_id < ofproto->n_tables
             ? 0
-            : OFPERR_NXBRC_BAD_TABLE_ID);
+            : OFPERR_OFPBRC_BAD_TABLE_ID);
 
 }
 
@@ -2914,7 +2914,7 @@ add_flow(struct ofproto *ofproto, struct ofconn *ofconn,
     } else if (fm->table_id < ofproto->n_tables) {
         table = &ofproto->tables[fm->table_id];
     } else {
-        return OFPERR_NXFMFC_BAD_TABLE_ID;
+        return OFPERR_OFPBRC_BAD_TABLE_ID;
     }
 
     if (table->flags & OFTABLE_READONLY) {
