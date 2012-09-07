@@ -1311,6 +1311,11 @@ dp_netdev_port_input(struct dp_netdev *dp, struct dp_netdev_port *port,
 {
     struct dp_netdev_flow *flow;
     struct flow key;
+    struct nlattr *actions;
+    size_t actions_len;
+#ifdef THREADED
+    uint8_t actions_buf[128];
+#endif
 
     if (packet->size < ETH_HEADER_LEN) {
         return;
@@ -1324,14 +1329,34 @@ dp_netdev_port_input(struct dp_netdev *dp, struct dp_netdev_port *port,
 #endif
     if (flow) {
         dp_netdev_flow_used(flow, packet);
-        dp_netdev_execute_actions(dp, packet, &key,
-                                  flow->actions, flow->actions_len);
+        actions_len = flow->actions_len;
+#ifdef THREADED
+        if (actions_len <= sizeof(actions_buf))
+        {
+            actions = actions_buf;
+        }
+        else
+        {
+            actions = xmalloc(actions_len);
+        }
+        memcpy(actions, flow->actions, actions_len);
+#else
+        actions = flow->actions;
+#endif
+        UNLOCK(&dp->table_mutex);
+        dp_netdev_execute_actions(dp, packet, &key, actions, actions_len);
+#ifdef THREADED
+        if (actions_len > sizeof(actions_buf))
+        {
+            free(actions);
+        }
+#endif
         dp->n_hit++;
     } else {
+        UNLOCK(&dp->table_mutex);
         dp->n_missed++;
         dp_netdev_output_userspace(dp, packet, DPIF_UC_MISS, &key, NULL);
     }
-    UNLOCK(&dp->table_mutex);
 }
 
 #ifdef THREADED
