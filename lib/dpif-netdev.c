@@ -1353,9 +1353,9 @@ dp_netdev_port_input(struct dp_netdev *dp, struct dp_netdev_port *port,
 #endif
         dp->n_hit++;
     } else {
-        UNLOCK(&dp->table_mutex);
         dp->n_missed++;
         dp_netdev_output_userspace(dp, packet, DPIF_UC_MISS, &key, NULL);
+        UNLOCK(&dp->table_mutex);
     }
 }
 
