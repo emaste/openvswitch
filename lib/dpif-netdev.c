@@ -1448,7 +1448,7 @@ dp_thread_body(void *args OVS_UNUSED)
                 dp->notifier_fd = &fds[n_fds];
                 n_fds++;
             }
-            if (n_fds >= sizeof(fds) / sizeof(fds[0])) {
+            if (n_fds >= ARRAY_SIZE(fds)) {
                 VLOG_ERR("Too many fds for poll adding notifier");
                 break;
             }
@@ -1459,7 +1459,7 @@ dp_thread_body(void *args OVS_UNUSED)
                 fds[n_fds].events = POLLIN;
                 port->poll_fd = &fds[n_fds];
                 n_fds++;
-                if (n_fds >= sizeof(fds) / sizeof(fds[0])) {
+                if (n_fds >= ARRAY_SIZE(fds)) {
                     VLOG_ERR("Too many fds for poll adding port fd");
                     break;
                 }
