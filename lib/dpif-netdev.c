@@ -1277,13 +1277,12 @@ dpif_netdev_recv_purge(struct dpif *dpif)
 }
 
 static void
-dp_netdev_flow_used(struct dp_netdev_flow *flow, struct flow *key,
-                    const struct ofpbuf *packet)
+dp_netdev_flow_used(struct dp_netdev_flow *flow, const struct ofpbuf *packet)
 {
     flow->used = time_msec();
     flow->packet_count++;
     flow->byte_count += packet->size;
-    flow->tcp_flags |= packet_get_tcp_flags(packet, key);
+    flow->tcp_flags |= packet_get_tcp_flags(packet, &flow->key);
 }
 
 static void
@@ -1309,7 +1308,7 @@ dp_netdev_port_input(struct dp_netdev *dp, struct dp_netdev_port *port,
     flow = dp_netdev_lookup_flow(dp, &key);
 #endif
     if (flow) {
-        dp_netdev_flow_used(flow, &key, packet);
+        dp_netdev_flow_used(flow, packet);
         actions_len = flow->actions_len;
 #ifdef THREADED
         if (actions_len <= sizeof(actions_buf))
