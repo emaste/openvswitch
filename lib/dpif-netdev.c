@@ -320,16 +320,7 @@ create_dp_netdev(const char *name, const struct dpif_class *class,
 static int
 dp_netdev_notifier_init(struct dp_netdev_notifier *dn)
 {
-    int error = pipe(dn->pipe);
-    if (error) {
-        VLOG_ERR("Unable to create notifier: %s", strerror(errno));
-        return errno;
-    }
-    if (set_nonblocking(dn->pipe[0]) || set_nonblocking(dn->pipe[1])) {
-        VLOG_ERR("Unable to set nonblocking on notifier pipe: %s",
-                 strerror(errno));
-        return errno;
-    }
+    xpipe_nonblocking(dn->pipe);
     VLOG_DBG("Notifier pipes created (%d, %d)", dn->pipe[0], dn->pipe[1]);
     return 0;
 }

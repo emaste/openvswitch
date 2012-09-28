@@ -176,19 +176,7 @@ netdev_dummy_listen(struct netdev *netdev_)
     if (netdev->listening)
         return 0;
 
-    error = pipe(netdev->s_pipe);
-    if (error) {
-        VLOG_ERR("Unable to create dummy pipe: %s", strerror(errno));
-        return errno;
-    }
-    if (set_nonblocking(netdev->s_pipe[0]) ||
-        set_nonblocking(netdev->s_pipe[1])) {
-        VLOG_ERR("Unable to set nonblocking on dummy pipe: %s",
-                 strerror(errno));
-        close(netdev->s_pipe[0]);
-        close(netdev->s_pipe[1]);
-        return errno;
-    }
+    xpipe_nonblocking(netdev->s_pipe);
     pthread_mutex_init(&netdev->queue_mutex, NULL);
 #endif
     netdev->listening = true;
