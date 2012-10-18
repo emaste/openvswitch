@@ -218,8 +218,13 @@ ffff 0048 00002320 0010 000a 0014 0050 123456789abcdef0 0000 02 00 0002 0004 dnl
 # actions=exit
 ffff 0010 00002320 0011 000000000000
 
+dnl NXAST_DEC_TTL
 # actions=dec_ttl
 ffff 0010 00002320 0012 000000000000
+
+dnl OpenFlow 1.1 OFPAT_DEC_TTL
+# actions=dec_ttl
+0018 0008 00000000
 
 # actions=fin_timeout(idle_timeout=10,hard_timeout=20)
 ffff 0010 00002320 0013 000a 0014 0000
@@ -243,11 +248,23 @@ AT_CHECK(
 AT_CLEANUP
 
 AT_SETUP([OpenFlow 1.1 instruction translation])
-AT_KEYWORDS([OF1.1])
+AT_KEYWORDS([OF1.1 instruction])
 AT_DATA([test-data], [dnl
 # actions=LOCAL
 0004 0018 00000000 dnl
 0000 0010 fffffffe 04d2 000000000000
+
+dnl Apply-Actions non-zero padding
+# actions=drop
+#  0: 00 -> (none)
+#  1: 04 -> (none)
+#  2: 00 -> (none)
+#  3: 08 -> (none)
+#  4: 00 -> (none)
+#  5: 00 -> (none)
+#  6: 00 -> (none)
+#  7: 01 -> (none)
+0004 0008 00000001
 
 dnl Check that an empty Apply-Actions instruction gets dropped.
 # actions=drop
@@ -274,8 +291,13 @@ dnl Goto-Table instruction too long.
 # bad OF1.1 instructions: OFPBIC_BAD_LEN
 0001 0010 01 000000 0000000000000000
 
-dnl Goto-Table not supported yet.
-# bad OF1.1 instructions: OFPBIC_UNSUP_INST
+dnl Goto-Table 1 instruction non-zero padding
+# actions=goto_table:1
+#  7: 01 -> 00
+0001 0008 01 000001
+
+dnl Goto-Table 1
+# actions=goto_table:1
 0001 0008 01 000000
 
 dnl Write-Metadata not supported yet.
@@ -294,9 +316,23 @@ dnl Write-Actions not supported yet.
 # bad OF1.1 instructions: OFPBIC_UNSUP_INST
 0003 0008 01 000000
 
-dnl Clear-Actions not supported yet.
-# bad OF1.1 instructions: OFPBIC_UNSUP_INST
+dnl Clear-Actions too-long
+# bad OF1.1 instructions: OFPBIC_BAD_LEN
+0005 0010 00000000 0000000000000000
+
+dnl Clear-Actions non-zero padding
+# actions=clear_actions
+#  7: 01 -> 00
+0005 0008 00000001
+
+dnl Clear-Actions non-zero padding
+# actions=clear_actions
+#  4: 01 -> 00
 0005 0008 01 000000
+
+dnl Clear-Actions
+# actions=clear_actions
+0005 0008 00000000
 
 dnl Experimenter actions not supported yet.
 # bad OF1.1 instructions: OFPBIC_BAD_EXPERIMENTER

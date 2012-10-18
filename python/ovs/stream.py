@@ -54,11 +54,8 @@ class Stream(object):
     _SOCKET_METHODS = {}
 
     @staticmethod
-    def register_method(method):
-        def _register_method(cls):
-            Stream._SOCKET_METHODS[method + ":"] = cls
-            return cls
-        return _register_method
+    def register_method(method, cls):
+        Stream._SOCKET_METHODS[method + ":"] = cls
 
     @staticmethod
     def _find_method(name):
@@ -344,16 +341,15 @@ Passive %s connection methods:
   punix:FILE              Listen on Unix domain socket FILE""" % (name, name)
 
 
-@Stream.register_method("unix")
 class UnixStream(Stream):
     @staticmethod
     def _open(suffix, dscp):
         connect_path = suffix
         return  ovs.socket_util.make_unix_socket(socket.SOCK_STREAM,
                                                  True, None, connect_path)
+Stream.register_method("unix", UnixStream)
 
 
-@Stream.register_method("tcp")
 class TCPStream(Stream):
     @staticmethod
     def _open(suffix, dscp):
@@ -362,3 +358,4 @@ class TCPStream(Stream):
         if not error:
             sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
         return error, sock
+Stream.register_method("tcp", TCPStream)
