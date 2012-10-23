@@ -279,13 +279,12 @@ parse_controller(struct ofpbuf *b, char *arg)
 }
 
 static void
-parse_noargs_dec_ttl(struct ofpbuf *b, enum ofputil_action_code compat)
+parse_noargs_dec_ttl(struct ofpbuf *b)
 {
     struct ofpact_cnt_ids *ids;
     uint16_t id = 0;
 
     ids = ofpact_put_DEC_TTL(b);
-    ids->ofpact.compat = compat;
     ofpbuf_put(b, &id, sizeof id);
     ids = b->l2;
     ids->n_controllers++;
@@ -293,10 +292,10 @@ parse_noargs_dec_ttl(struct ofpbuf *b, enum ofputil_action_code compat)
 }
 
 static void
-parse_dec_ttl(struct ofpbuf *b, char *arg, enum ofputil_action_code compat)
+parse_dec_ttl(struct ofpbuf *b, char *arg)
 {
     if (*arg == '\0') {
-        parse_noargs_dec_ttl(b, compat);
+        parse_noargs_dec_ttl(b);
     } else {
         struct ofpact_cnt_ids *ids;
         char *cntr;
@@ -362,6 +361,24 @@ set_field_parse(const char *arg, struct ofpbuf *ofpacts)
 }
 
 static void
+parse_metadata(struct ofpbuf *b, char *arg)
+{
+    struct ofpact_metadata *om;
+    char *mask = strchr(arg, '/');
+
+    om = ofpact_put_WRITE_METADATA(b);
+
+    if (mask) {
+        *mask = '\0';
+        om->mask = htonll(str_to_u64(mask + 1));
+    } else {
+        om->mask = htonll(UINT64_MAX);
+    }
+
+    om->metadata = htonll(str_to_u64(arg));
+}
+
+static void
 parse_named_action(enum ofputil_action_code code, const struct flow *flow,
                    char *arg, struct ofpbuf *ofpacts)
 {
@@ -403,6 +420,7 @@ parse_named_action(enum ofputil_action_code code, const struct flow *flow,
         break;
 
     case OFPUTIL_OFPAT10_STRIP_VLAN:
+    case OFPUTIL_OFPAT11_POP_VLAN:
         ofpact_put_STRIP_VLAN(ofpacts);
         break;
 
@@ -438,8 +456,7 @@ parse_named_action(enum ofputil_action_code code, const struct flow *flow,
         break;
 
     case OFPUTIL_OFPAT11_DEC_NW_TTL:
-        parse_noargs_dec_ttl(ofpacts, code);
-        break;
+        NOT_REACHED();
 
     case OFPUTIL_OFPAT10_SET_TP_SRC:
     case OFPUTIL_OFPAT11_SET_TP_SRC:
@@ -464,6 +481,10 @@ parse_named_action(enum ofputil_action_code code, const struct flow *flow,
         tunnel = ofpact_put_SET_TUNNEL(ofpacts);
         tunnel->ofpact.compat = code;
         tunnel->tun_id = str_to_u64(arg);
+        break;
+
+    case OFPUTIL_NXAST_WRITE_METADATA:
+        parse_metadata(ofpacts, arg);
         break;
 
     case OFPUTIL_NXAST_SET_QUEUE:
@@ -516,7 +537,7 @@ parse_named_action(enum ofputil_action_code code, const struct flow *flow,
         break;
 
     case OFPUTIL_NXAST_DEC_TTL:
-        parse_dec_ttl(ofpacts, arg, code);
+        parse_dec_ttl(ofpacts, arg);
         break;
 
     case OFPUTIL_NXAST_FIN_TIMEOUT:
@@ -561,6 +582,7 @@ static void
 str_to_ofpacts(const struct flow *flow, char *str, struct ofpbuf *ofpacts)
 {
     char *pos, *act, *arg;
+    enum ofperr error;
     int n_actions;
 
     pos = str;
@@ -571,6 +593,12 @@ str_to_ofpacts(const struct flow *flow, char *str, struct ofpbuf *ofpacts)
         }
         n_actions++;
     }
+
+    error = ofpacts_verify(ofpacts->data, ofpacts->size);
+    if (error) {
+        ovs_fatal(0, "Incorrect action ordering");
+    }
+
     ofpact_pad(ofpacts);
 }
 
@@ -578,6 +606,8 @@ static void
 parse_named_instruction(enum ovs_instruction_type type,
                         char *arg, struct ofpbuf *ofpacts)
 {
+    enum ofperr error;
+
     switch (type) {
     case OVSINST_OFPIT11_APPLY_ACTIONS:
         NOT_REACHED();  /* This case is handled by str_to_inst_ofpacts() */
@@ -593,8 +623,7 @@ parse_named_instruction(enum ovs_instruction_type type,
         break;
 
     case OVSINST_OFPIT11_WRITE_METADATA:
-        /* TODO:XXX */
-        ovs_fatal(0, "instruction write-metadata is not supported yet");
+        parse_metadata(ofpacts, arg);
         break;
 
     case OVSINST_OFPIT11_GOTO_TABLE: {
@@ -606,6 +635,13 @@ parse_named_instruction(enum ovs_instruction_type type,
         ogt->table_id = str_to_table_id(table_s);
         break;
     }
+    }
+
+    /* If write_metadata is specified as an action AND an instruction, ofpacts
+       could be invalid. */
+    error = ofpacts_verify(ofpacts->data, ofpacts->size);
+    if (error) {
+        ovs_fatal(0, "Incorrect instruction ordering");
     }
 }
 
