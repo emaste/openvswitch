@@ -112,6 +112,8 @@ lib_libopenvswitch_a_SOURCES = \
 	lib/ofp-util.c \
 	lib/ofp-util.def \
 	lib/ofp-util.h \
+	lib/ofp-version-opt.h \
+	lib/ofp-version-opt.c \
 	lib/ofpbuf.c \
 	lib/ofpbuf.h \
 	lib/ovsdb-data.c \
@@ -288,6 +290,7 @@ MAN_FRAGMENTS += \
 	lib/daemon-syn.man \
 	lib/leak-checker.man \
 	lib/memory-unixctl.man \
+	lib/ofp-version.man \
 	lib/ovs.tmac \
 	lib/ssl-bootstrap.man \
 	lib/ssl-bootstrap-syn.man \

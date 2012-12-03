@@ -434,6 +434,11 @@ parse_named_action(enum ofputil_action_code code, const struct flow *flow,
         ofpact_put_PUSH_VLAN(ofpacts);
         break;
 
+    case OFPUTIL_OFPAT11_SET_QUEUE:
+        ofpact_put_SET_QUEUE(ofpacts)->queue_id = str_to_u32(arg);
+        break;
+
+
     case OFPUTIL_OFPAT10_SET_DL_SRC:
     case OFPUTIL_OFPAT11_SET_DL_SRC:
         str_to_mac(arg, ofpact_put_SET_ETH_SRC(ofpacts)->mac);
@@ -829,7 +834,7 @@ parse_ofp_str(struct ofputil_flow_mod *fm, int command, const char *str_,
     fm->idle_timeout = OFP_FLOW_PERMANENT;
     fm->hard_timeout = OFP_FLOW_PERMANENT;
     fm->buffer_id = UINT32_MAX;
-    fm->out_port = OFPP_NONE;
+    fm->out_port = OFPP_ANY;
     fm->flags = 0;
     if (fields & F_ACTIONS) {
         act_str = strstr(string, "action");
@@ -858,6 +863,12 @@ parse_ofp_str(struct ofputil_flow_mod *fm, int command, const char *str_,
             fm->flags |= OFPFF_SEND_FLOW_REM;
         } else if (fields & F_FLAGS && !strcmp(name, "check_overlap")) {
             fm->flags |= OFPFF_CHECK_OVERLAP;
+        } else if (fields & F_FLAGS && !strcmp(name, "reset_counts")) {
+            fm->flags |= OFPFF12_RESET_COUNTS;
+        } else if (fields & F_FLAGS && !strcmp(name, "no_packet_counts")) {
+            fm->flags |= OFPFF13_NO_PKT_COUNTS;
+        } else if (fields & F_FLAGS && !strcmp(name, "no_byte_counts")) {
+            fm->flags |= OFPFF13_NO_BYT_COUNTS;
         } else {
             char *value;
 

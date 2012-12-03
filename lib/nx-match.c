@@ -644,8 +644,8 @@ nx_put_raw(struct ofpbuf *b, bool oxm, const struct match *match,
     }
 
     /* Tunnel ID. */
-    nxm_put_64m(b, NXM_NX_TUN_ID, flow->tunnel.tun_id,
-                match->wc.masks.tunnel.tun_id);
+    nxm_put_64m(b, oxm ? OXM_OF_TUNNEL_ID : NXM_NX_TUN_ID,
+		flow->tunnel.tun_id, match->wc.masks.tunnel.tun_id);
 
     /* Registers. */
     for (i = 0; i < FLOW_N_REGS; i++) {
@@ -1202,6 +1202,7 @@ nxm_reg_load_to_nxast(const struct ofpact_reg_load *load,
         struct ofp_header *oh = (struct ofp_header *)openflow->l2;
 
         switch(oh->version) {
+        case OFP13_VERSION:
         case OFP12_VERSION:
             set_field_to_ofast(load, openflow);
             break;
