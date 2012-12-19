@@ -794,6 +794,20 @@ port_open_type(const char *datapath_type, const char *port_type)
 
 /* Type functions. */
 
+static struct ofproto_dpif *
+lookup_ofproto_dpif_by_port_name(const char *name)
+{
+    struct ofproto_dpif *ofproto;
+
+    HMAP_FOR_EACH (ofproto, all_ofproto_dpifs_node, &all_ofproto_dpifs) {
+        if (sset_contains(&ofproto->ports, name)) {
+            return ofproto;
+        }
+    }
+
+    return NULL;
+}
+
 static int
 type_run(const char *type)
 {
@@ -817,21 +831,15 @@ type_run(const char *type)
 
     /* Check for port changes in the dpif. */
     while ((error = dpif_port_poll(backer->dpif, &devname)) == 0) {
-        struct ofproto_dpif *ofproto = NULL;
+        struct ofproto_dpif *ofproto;
         struct dpif_port port;
 
         /* Don't report on the datapath's device. */
         if (!strcmp(devname, dpif_base_name(backer->dpif))) {
-            continue;
+            goto next;
         }
 
-        HMAP_FOR_EACH (ofproto, all_ofproto_dpifs_node,
-                       &all_ofproto_dpifs) {
-            if (sset_contains(&ofproto->ports, devname)) {
-                break;
-            }
-        }
-
+        ofproto = lookup_ofproto_dpif_by_port_name(devname);
         if (dpif_port_query_by_name(backer->dpif, devname, &port)) {
             /* The port was removed.  If we know the datapath,
              * report it through poll_set().  If we don't, it may be
@@ -842,13 +850,14 @@ type_run(const char *type)
                 sset_add(&ofproto->port_poll_set, devname);
                 ofproto->port_poll_errno = 0;
             }
-            dpif_port_destroy(&port);
         } else if (!ofproto) {
             /* The port was added, but we don't know with which
              * ofproto we should associate it.  Delete it. */
             dpif_port_del(backer->dpif, port.port_no);
         }
+        dpif_port_destroy(&port);
 
+    next:
         free(devname);
     }
 
@@ -1115,7 +1124,7 @@ construct(struct ofproto *ofproto_)
     ofproto->port_poll_errno = 0;
 
     SHASH_FOR_EACH_SAFE (node, next, &init_ofp_ports) {
-        const struct iface_hint *iface_hint = node->data;
+        struct iface_hint *iface_hint = node->data;
 
         if (!strcmp(iface_hint->br_name, ofproto->up.name)) {
             /* Check if the datapath already has this port. */
@@ -1125,6 +1134,7 @@ construct(struct ofproto *ofproto_)
 
             free(iface_hint->br_name);
             free(iface_hint->br_type);
+            free(iface_hint);
             shash_delete(&init_ofp_ports, node);
         }
     }
