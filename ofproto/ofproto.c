@@ -407,11 +407,11 @@ ofproto_create(const char *datapath_name, const char *datapath_type,
                                         OFPROTO_FLOW_EVICTION_THRESHOLD_DEFAULT);
     ofproto->forward_bpdu = false;
     ofproto->fallback_dpid = pick_fallback_dpid();
-    ofproto->mfr_desc = xstrdup(DEFAULT_MFR_DESC);
-    ofproto->hw_desc = xstrdup(DEFAULT_HW_DESC);
-    ofproto->sw_desc = xstrdup(DEFAULT_SW_DESC);
-    ofproto->serial_desc = xstrdup(DEFAULT_SERIAL_DESC);
-    ofproto->dp_desc = xstrdup(DEFAULT_DP_DESC);
+    ofproto->mfr_desc = NULL;
+    ofproto->hw_desc = NULL;
+    ofproto->sw_desc = NULL;
+    ofproto->serial_desc = NULL;
+    ofproto->dp_desc = NULL;
     ofproto->frag_handling = OFPC_FRAG_NORMAL;
     hmap_init(&ofproto->ports);
     shash_init(&ofproto->port_by_name);
@@ -598,53 +598,10 @@ ofproto_set_mac_table_config(struct ofproto *ofproto, unsigned idle_time,
 }
 
 void
-ofproto_set_desc(struct ofproto *p,
-                 const char *mfr_desc, const char *hw_desc,
-                 const char *sw_desc, const char *serial_desc,
-                 const char *dp_desc)
+ofproto_set_dp_desc(struct ofproto *p, const char *dp_desc)
 {
-    struct ofp_desc_stats *ods;
-
-    if (mfr_desc) {
-        if (strlen(mfr_desc) >= sizeof ods->mfr_desc) {
-            VLOG_WARN("%s: truncating mfr_desc, must be less than %zu bytes",
-                      p->name, sizeof ods->mfr_desc);
-        }
-        free(p->mfr_desc);
-        p->mfr_desc = xstrdup(mfr_desc);
-    }
-    if (hw_desc) {
-        if (strlen(hw_desc) >= sizeof ods->hw_desc) {
-            VLOG_WARN("%s: truncating hw_desc, must be less than %zu bytes",
-                      p->name, sizeof ods->hw_desc);
-        }
-        free(p->hw_desc);
-        p->hw_desc = xstrdup(hw_desc);
-    }
-    if (sw_desc) {
-        if (strlen(sw_desc) >= sizeof ods->sw_desc) {
-            VLOG_WARN("%s: truncating sw_desc, must be less than %zu bytes",
-                      p->name, sizeof ods->sw_desc);
-        }
-        free(p->sw_desc);
-        p->sw_desc = xstrdup(sw_desc);
-    }
-    if (serial_desc) {
-        if (strlen(serial_desc) >= sizeof ods->serial_num) {
-            VLOG_WARN("%s: truncating serial_desc, must be less than %zu "
-                      "bytes", p->name, sizeof ods->serial_num);
-        }
-        free(p->serial_desc);
-        p->serial_desc = xstrdup(serial_desc);
-    }
-    if (dp_desc) {
-        if (strlen(dp_desc) >= sizeof ods->dp_desc) {
-            VLOG_WARN("%s: truncating dp_desc, must be less than %zu bytes",
-                      p->name, sizeof ods->dp_desc);
-        }
-        free(p->dp_desc);
-        p->dp_desc = xstrdup(dp_desc);
-    }
+    free(p->dp_desc);
+    p->dp_desc = dp_desc ? xstrdup(dp_desc) : NULL;
 }
 
 int
@@ -2443,17 +2400,29 @@ static enum ofperr
 handle_desc_stats_request(struct ofconn *ofconn,
                           const struct ofp_header *request)
 {
+    static const char *default_mfr_desc = "Nicira, Inc.";
+    static const char *default_hw_desc = "Open vSwitch";
+    static const char *default_sw_desc = VERSION;
+    static const char *default_serial_desc = "None";
+    static const char *default_dp_desc = "None";
+
     struct ofproto *p = ofconn_get_ofproto(ofconn);
     struct ofp_desc_stats *ods;
     struct ofpbuf *msg;
 
     msg = ofpraw_alloc_stats_reply(request, 0);
     ods = ofpbuf_put_zeros(msg, sizeof *ods);
-    ovs_strlcpy(ods->mfr_desc, p->mfr_desc, sizeof ods->mfr_desc);
-    ovs_strlcpy(ods->hw_desc, p->hw_desc, sizeof ods->hw_desc);
-    ovs_strlcpy(ods->sw_desc, p->sw_desc, sizeof ods->sw_desc);
-    ovs_strlcpy(ods->serial_num, p->serial_desc, sizeof ods->serial_num);
-    ovs_strlcpy(ods->dp_desc, p->dp_desc, sizeof ods->dp_desc);
+    ovs_strlcpy(ods->mfr_desc, p->mfr_desc ? p->mfr_desc : default_mfr_desc,
+                sizeof ods->mfr_desc);
+    ovs_strlcpy(ods->hw_desc, p->hw_desc ? p->hw_desc : default_hw_desc,
+                sizeof ods->hw_desc);
+    ovs_strlcpy(ods->sw_desc, p->sw_desc ? p->sw_desc : default_sw_desc,
+                sizeof ods->sw_desc);
+    ovs_strlcpy(ods->serial_num,
+                p->serial_desc ? p->serial_desc : default_serial_desc,
+                sizeof ods->serial_num);
+    ovs_strlcpy(ods->dp_desc, p->dp_desc ? p->dp_desc : default_dp_desc,
+                sizeof ods->dp_desc);
     ofconn_send_reply(ofconn, msg);
 
     return 0;
@@ -3547,7 +3516,7 @@ handle_flow_mod(struct ofconn *ofconn, const struct ofp_header *oh)
     if (error) {
         goto exit_free_ofpacts;
     }
-    
+
     /* Record the operation for logging a summary report. */
     switch (fm.command) {
     case OFPFC_ADD:
@@ -3619,27 +3588,38 @@ handle_flow_mod__(struct ofproto *ofproto, struct ofconn *ofconn,
 static enum ofperr
 handle_role_request(struct ofconn *ofconn, const struct ofp_header *oh)
 {
-    const struct nx_role_request *nrr = ofpmsg_body(oh);
-    struct nx_role_request *reply;
+    struct ofputil_role_request rr;
     struct ofpbuf *buf;
     uint32_t role;
+    enum ofperr error;
 
-    role = ntohl(nrr->role);
-    if (role != NX_ROLE_OTHER && role != NX_ROLE_MASTER
-        && role != NX_ROLE_SLAVE) {
-        return OFPERR_OFPRRFC_BAD_ROLE;
+    error = ofputil_decode_role_message(oh, &rr);
+    if (error) {
+        return error;
     }
+
+    if (rr.request_current_role_only) {
+        role = ofconn_get_role(ofconn); /* NX_ROLE_* */
+        goto reply;
+    }
+
+    role = rr.role;
 
     if (ofconn_get_role(ofconn) != role
         && ofconn_has_pending_opgroups(ofconn)) {
         return OFPROTO_POSTPONE;
     }
 
+    if (rr.have_generation_id) {
+        if (!ofconn_set_master_election_id(ofconn, rr.generation_id)) {
+            return OFPERR_OFPRRFC_STALE;
+        }
+    }
+
     ofconn_set_role(ofconn, role);
 
-    buf = ofpraw_alloc_reply(OFPRAW_NXT_ROLE_REPLY, oh, 0);
-    reply = ofpbuf_put_zeros(buf, sizeof *reply);
-    reply->role = htonl(role);
+reply:
+    buf = ofputil_encode_role_reply(oh, role);
     ofconn_send_reply(ofconn, buf);
 
     return 0;
@@ -4050,14 +4030,14 @@ handle_openflow__(struct ofconn *ofconn, const struct ofpbuf *msg)
     case OFPTYPE_BARRIER_REQUEST:
         return handle_barrier_request(ofconn, oh);
 
+    case OFPTYPE_ROLE_REQUEST:
+        return handle_role_request(ofconn, oh);
+
         /* OpenFlow replies. */
     case OFPTYPE_ECHO_REPLY:
         return 0;
 
         /* Nicira extension requests. */
-    case OFPTYPE_ROLE_REQUEST:
-        return handle_role_request(ofconn, oh);
-
     case OFPTYPE_FLOW_MOD_TABLE_ID:
         return handle_nxt_flow_mod_table_id(ofconn, oh);
 

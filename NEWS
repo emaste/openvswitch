@@ -5,6 +5,8 @@ post-v1.9.0
       http://tools.ietf.org/html/draft-mahalingam-dutt-dcops-vxlan-02).
     - New "vlog/disable-rate-limit" and "vlog/enable-rate-limit" commands
       available through ovs-appctl allow control over logging rate limits.
+    - The OpenFlow "dp_desc" may now be configured by setting the value of 
+      other-config:dp-desc in the Bridge table.
 
 
 v1.9.0 - xx xxx xxxx
@@ -65,6 +67,7 @@ v1.9.0 - xx xxx xxxx
     - The following features are now deprecated.  They will be removed no
       earlier than February 2013.  Please email dev@openvswitch.org with
       concerns.
+        - Bridge compatibility.
         - Stable bond mode.
         - The autopath action.
         - Interface type "null".

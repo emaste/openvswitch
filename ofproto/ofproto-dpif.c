@@ -5384,28 +5384,24 @@ compose_output_action__(struct action_xlate_ctx *ctx, uint16_t ofp_port,
     uint32_t odp_port = ofp_port_to_odp_port(ctx->ofproto, ofp_port);
     ovs_be16 flow_vlan_tci = ctx->flow.vlan_tci;
     uint8_t flow_nw_tos = ctx->flow.nw_tos;
-    uint16_t out_port;
+    struct priority_to_dscp *pdscp;
+    uint32_t out_port;
 
-    if (ofport) {
-        struct priority_to_dscp *pdscp;
+    if (!ofport) {
+        xlate_report(ctx, "Nonexistent output port");
+        return;
+    } else if (ofport->up.pp.config & OFPUTIL_PC_NO_FWD) {
+        xlate_report(ctx, "OFPPC_NO_FWD set, skipping output");
+        return;
+    } else if (check_stp && !stp_forward_in_state(ofport->stp_state)) {
+        xlate_report(ctx, "STP not in forwarding state, skipping output");
+        return;
+    }
 
-        if (ofport->up.pp.config & OFPUTIL_PC_NO_FWD) {
-            xlate_report(ctx, "OFPPC_NO_FWD set, skipping output");
-            return;
-        } else if (check_stp && !stp_forward_in_state(ofport->stp_state)) {
-            xlate_report(ctx, "STP not in forwarding state, skipping output");
-            return;
-        }
-
-        pdscp = get_priority(ofport, ctx->flow.skb_priority);
-        if (pdscp) {
-            ctx->flow.nw_tos &= ~IP_DSCP_MASK;
-            ctx->flow.nw_tos |= pdscp->dscp;
-        }
-    } else {
-        /* We may not have an ofport record for this port, but it doesn't hurt
-         * to allow forwarding to it anyhow.  Maybe such a port will appear
-         * later and we're pre-populating the flow table.  */
+    pdscp = get_priority(ofport, ctx->flow.skb_priority);
+    if (pdscp) {
+        ctx->flow.nw_tos &= ~IP_DSCP_MASK;
+        ctx->flow.nw_tos |= pdscp->dscp;
     }
 
     out_port = vsp_realdev_to_vlandev(ctx->ofproto, odp_port,
@@ -5468,7 +5464,7 @@ xlate_table_action(struct action_xlate_ctx *ctx,
         }
 
         if (rule == NULL && may_packet_in) {
-            /* TODO:XXX
+            /* XXX
              * check if table configuration flags
              * OFPTC_TABLE_MISS_CONTROLLER, default.
              * OFPTC_TABLE_MISS_CONTINUE,
@@ -5934,7 +5930,7 @@ do_xlate_actions(const struct ofpact *ofpacts, size_t ofpacts_len,
             break;
 
         case OFPACT_PUSH_VLAN:
-            /* TODO:XXX 802.1AD(QinQ) */
+            /* XXX 802.1AD(QinQ) */
             ctx->flow.vlan_tci = htons(VLAN_CFI);
             break;
 
@@ -6040,7 +6036,7 @@ do_xlate_actions(const struct ofpact *ofpacts, size_t ofpacts_len,
             break;
 
         case OFPACT_CLEAR_ACTIONS:
-            /* TODO:XXX
+            /* XXX
              * Nothing to do because writa-actions is not supported for now.
              * When writa-actions is supported, clear-actions also must
              * be supported at the same time.
@@ -6054,7 +6050,7 @@ do_xlate_actions(const struct ofpact *ofpacts, size_t ofpacts_len,
             break;
 
         case OFPACT_GOTO_TABLE: {
-            /* TODO:XXX remove recursion */
+            /* XXX remove recursion */
             /* It is assumed that goto-table is last action */
             struct ofpact_goto_table *ogt = ofpact_get_GOTO_TABLE(a);
             assert(ctx->table_id < ogt->table_id);

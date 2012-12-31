@@ -132,12 +132,6 @@ struct ofproto_controller {
     uint8_t dscp;               /* DSCP value for controller connection. */
 };
 
-#define DEFAULT_MFR_DESC "Nicira, Inc."
-#define DEFAULT_HW_DESC "Open vSwitch"
-#define DEFAULT_SW_DESC VERSION
-#define DEFAULT_SERIAL_DESC "None"
-#define DEFAULT_DP_DESC "None"
-
 void ofproto_enumerate_types(struct sset *types);
 const char *ofproto_normalize_type(const char *);
 
@@ -231,10 +225,7 @@ void ofproto_set_flow_eviction_threshold(struct ofproto *, unsigned threshold);
 void ofproto_set_forward_bpdu(struct ofproto *, bool forward_bpdu);
 void ofproto_set_mac_table_config(struct ofproto *, unsigned idle_time,
                                   size_t max_entries);
-void ofproto_set_desc(struct ofproto *,
-                      const char *mfr_desc, const char *hw_desc,
-                      const char *sw_desc, const char *serial_desc,
-                      const char *dp_desc);
+void ofproto_set_dp_desc(struct ofproto *, const char *dp_desc);
 int ofproto_set_snoops(struct ofproto *, const struct sset *snoops);
 int ofproto_set_netflow(struct ofproto *,
                         const struct netflow_options *nf_options);
