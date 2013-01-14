@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2009, 2010, 2011, 2012 Nicira, Inc.
+ * Copyright (c) 2009, 2010, 2011, 2012, 2013 Nicira, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -753,7 +753,7 @@ set_pvconns(struct pvconn ***pvconnsp, size_t *n_pvconnsp,
     SSET_FOR_EACH (name, sset) {
         struct pvconn *pvconn;
         int error;
-        error = pvconn_open(name, 0, &pvconn, 0);
+        error = pvconn_open(name, 0, 0, &pvconn);
         if (!error) {
             pvconns[n_pvconns++] = pvconn;
         } else {
@@ -1638,10 +1638,12 @@ connmgr_msg_in_hook(struct connmgr *mgr, const struct flow *flow,
 
 bool
 connmgr_may_set_up_flow(struct connmgr *mgr, const struct flow *flow,
+                        uint32_t local_odp_port,
                         const struct nlattr *odp_actions,
                         size_t actions_len)
 {
-    return !mgr->in_band || in_band_rule_check(flow, odp_actions, actions_len);
+    return !mgr->in_band || in_band_rule_check(flow, local_odp_port,
+                                               odp_actions, actions_len);
 }
 
 /* Fail-open and in-band implementation. */
@@ -1690,7 +1692,7 @@ ofservice_create(struct connmgr *mgr, const char *target,
     struct pvconn *pvconn;
     int error;
 
-    error = pvconn_open(target, allowed_versions, &pvconn, dscp);
+    error = pvconn_open(target, allowed_versions, dscp, &pvconn);
     if (error) {
         return error;
     }
@@ -1807,6 +1809,7 @@ void
 ofmonitor_destroy(struct ofmonitor *m)
 {
     if (m) {
+        minimatch_destroy(&m->match);
         hmap_remove(&m->ofconn->monitors, &m->ofconn_node);
         free(m);
     }

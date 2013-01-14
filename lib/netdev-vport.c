@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2010, 2011, 2012 Nicira, Inc.
+ * Copyright (c) 2010, 2011, 2012, 2013 Nicira, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -56,10 +56,7 @@ struct netdev_dev_vport {
     struct netdev_dev netdev_dev;
     struct ofpbuf *options;
     unsigned int change_seq;
-};
-
-struct netdev_vport {
-    struct netdev netdev;
+    uint8_t etheraddr[ETH_ADDR_LEN];
 };
 
 struct vport_class {
@@ -81,8 +78,6 @@ static int tnl_port_config_from_nlattr(const struct nlattr *options,
                                        size_t options_len,
                                        struct nlattr *a[OVS_TUNNEL_ATTR_MAX + 1]);
 
-static const char *netdev_vport_get_tnl_iface(const struct netdev *netdev);
-
 static bool
 is_vport_class(const struct netdev_class *class)
 {
@@ -103,12 +98,10 @@ netdev_dev_vport_cast(const struct netdev_dev *netdev_dev)
     return CONTAINER_OF(netdev_dev, struct netdev_dev_vport, netdev_dev);
 }
 
-static struct netdev_vport *
-netdev_vport_cast(const struct netdev *netdev)
+static struct netdev_dev_vport *
+netdev_vport_get_dev(const struct netdev *netdev)
 {
-    struct netdev_dev *netdev_dev = netdev_get_dev(netdev);
-    assert(is_vport_class(netdev_dev_get_class(netdev_dev)));
-    return CONTAINER_OF(netdev, struct netdev_vport, netdev);
+    return netdev_dev_vport_cast(netdev_get_dev(netdev));
 }
 
 /* If 'netdev' is a vport netdev, returns an ofpbuf that contains Netlink
@@ -137,6 +130,12 @@ netdev_vport_get_vport_type(const struct netdev *netdev)
             : OVS_VPORT_TYPE_UNSPEC);
 }
 
+static uint32_t
+get_u32_or_zero(const struct nlattr *a)
+{
+    return a ? nl_attr_get_u32(a) : 0;
+}
+
 const char *
 netdev_vport_get_netdev_type(const struct dpif_linux_vport *vport)
 {
@@ -160,7 +159,7 @@ netdev_vport_get_netdev_type(const struct dpif_linux_vport *vport)
                                         a)) {
             break;
         }
-        return (nl_attr_get_u32(a[OVS_TUNNEL_ATTR_FLAGS]) & TNL_F_IPSEC
+        return (get_u32_or_zero(a[OVS_TUNNEL_ATTR_FLAGS]) & TNL_F_IPSEC
                 ? "ipsec_gre" : "gre");
 
     case OVS_VPORT_TYPE_GRE64:
@@ -168,7 +167,7 @@ netdev_vport_get_netdev_type(const struct dpif_linux_vport *vport)
                                         a)) {
             break;
         }
-        return (nl_attr_get_u32(a[OVS_TUNNEL_ATTR_FLAGS]) & TNL_F_IPSEC
+        return (get_u32_or_zero(a[OVS_TUNNEL_ATTR_FLAGS]) & TNL_F_IPSEC
                 ? "ipsec_gre64" : "gre64");
 
     case OVS_VPORT_TYPE_CAPWAP:
@@ -197,6 +196,7 @@ netdev_vport_create(const struct netdev_class *netdev_class, const char *name,
     netdev_dev_init(&dev->netdev_dev, name, netdev_class);
     dev->options = NULL;
     dev->change_seq = 1;
+    eth_addr_random(dev->etheraddr);
 
     *netdev_devp = &dev->netdev_dev;
     route_table_register();
@@ -215,21 +215,16 @@ netdev_vport_destroy(struct netdev_dev *netdev_dev_)
 }
 
 static int
-netdev_vport_open(struct netdev_dev *netdev_dev_, struct netdev **netdevp)
+netdev_vport_open(struct netdev_dev *netdev_dev, struct netdev **netdevp)
 {
-    struct netdev_vport *netdev;
-
-    netdev = xmalloc(sizeof *netdev);
-    netdev_init(&netdev->netdev, netdev_dev_);
-
-    *netdevp = &netdev->netdev;
+    *netdevp = xmalloc(sizeof **netdevp);
+    netdev_init(*netdevp, netdev_dev);
     return 0;
 }
 
 static void
-netdev_vport_close(struct netdev *netdev_)
+netdev_vport_close(struct netdev *netdev)
 {
-    struct netdev_vport *netdev = netdev_vport_cast(netdev_);
     free(netdev);
 }
 
@@ -312,39 +307,17 @@ static int
 netdev_vport_set_etheraddr(struct netdev *netdev,
                            const uint8_t mac[ETH_ADDR_LEN])
 {
-    struct dpif_linux_vport vport;
-    int error;
-
-    dpif_linux_vport_init(&vport);
-    vport.cmd = OVS_VPORT_CMD_SET;
-    vport.name = netdev_get_name(netdev);
-    vport.address = mac;
-
-    error = dpif_linux_vport_transact(&vport, NULL, NULL);
-    if (!error) {
-        netdev_vport_poll_notify(netdev);
-    }
-    return error;
+    memcpy(netdev_vport_get_dev(netdev)->etheraddr, mac, ETH_ADDR_LEN);
+    netdev_vport_poll_notify(netdev);
+    return 0;
 }
 
 static int
 netdev_vport_get_etheraddr(const struct netdev *netdev,
                            uint8_t mac[ETH_ADDR_LEN])
 {
-    struct dpif_linux_vport reply;
-    struct ofpbuf *buf;
-    int error;
-
-    error = dpif_linux_vport_get(netdev_get_name(netdev), &reply, &buf);
-    if (!error) {
-        if (reply.address) {
-            memcpy(mac, reply.address, ETH_ADDR_LEN);
-        } else {
-            error = EOPNOTSUPP;
-        }
-        ofpbuf_delete(buf);
-    }
-    return error;
+    memcpy(mac, netdev_vport_get_dev(netdev)->etheraddr, ETH_ADDR_LEN);
+    return 0;
 }
 
 /* Copies 'src' into 'dst', performing format conversion in the process.
@@ -400,11 +373,26 @@ netdev_vport_get_stats(const struct netdev *netdev, struct netdev_stats *stats)
 }
 
 static int
-netdev_vport_get_drv_info(const struct netdev *netdev, struct smap *smap)
+tunnel_get_status(const struct netdev *netdev, struct smap *smap)
 {
-    const char *iface = netdev_vport_get_tnl_iface(netdev);
+    struct netdev_dev_vport *ndv = netdev_vport_get_dev(netdev);
+    struct nlattr *a[OVS_TUNNEL_ATTR_MAX + 1];
+    static char iface[IFNAMSIZ];
+    ovs_be32 route;
 
-    if (iface) {
+    if (!ndv->options) {
+        /* Race condition when 'ndv' was created, but did not have it's
+         * configuration set yet. */
+        return 0;
+    }
+
+    if (tnl_port_config_from_nlattr(ndv->options->data,
+                                    ndv->options->size, a)) {
+        return 0;
+    }
+    route = nl_attr_get_be32(a[OVS_TUNNEL_ATTR_DST_IPV4]);
+
+    if (route_table_get_name(route, iface)) {
         struct netdev *egress_netdev;
 
         smap_add(smap, "tunnel_egress_iface", iface);
@@ -435,7 +423,7 @@ netdev_vport_update_flags(struct netdev *netdev OVS_UNUSED,
 static unsigned int
 netdev_vport_change_seq(const struct netdev *netdev)
 {
-    return netdev_dev_vport_cast(netdev_get_dev(netdev))->change_seq;
+    return netdev_vport_get_dev(netdev)->change_seq;
 }
 
 static void
@@ -450,37 +438,12 @@ netdev_vport_wait(void)
     route_table_wait();
 }
 
-/* get_tnl_iface() implementation. */
-static const char *
-netdev_vport_get_tnl_iface(const struct netdev *netdev)
-{
-    struct nlattr *a[OVS_TUNNEL_ATTR_MAX + 1];
-    ovs_be32 route;
-    struct netdev_dev_vport *ndv;
-    static char name[IFNAMSIZ];
-
-    ndv = netdev_dev_vport_cast(netdev_get_dev(netdev));
-    if (tnl_port_config_from_nlattr(ndv->options->data, ndv->options->size,
-                                    a)) {
-        return NULL;
-    }
-    route = nl_attr_get_be32(a[OVS_TUNNEL_ATTR_DST_IPV4]);
-
-    if (route_table_get_name(route, name)) {
-        return name;
-    }
-
-    return NULL;
-}
-
 /* Helper functions. */
 
 static void
 netdev_vport_poll_notify(const struct netdev *netdev)
 {
-    struct netdev_dev_vport *ndv;
-
-    ndv = netdev_dev_vport_cast(netdev_get_dev(netdev));
+    struct netdev_dev_vport *ndv = netdev_vport_get_dev(netdev);
 
     ndv->change_seq++;
     if (!ndv->change_seq) {
@@ -590,14 +553,6 @@ parse_tunnel_config(const char *name, const char *type,
             if (!strcmp(node->value, "false")) {
                 flags &= ~TNL_F_DF_DEFAULT;
             }
-        } else if (!strcmp(node->key, "pmtud")) {
-            if (!strcmp(node->value, "true")) {
-                VLOG_WARN_ONCE("%s: The tunnel Path MTU discovery is "
-                               "deprecated and may be removed in February "
-                               "2013. Please email dev@openvswitch.org with "
-                               "concerns.", name);
-                flags |= TNL_F_PMTUD;
-            }
         } else if (!strcmp(node->key, "peer_cert") && is_ipsec) {
             if (smap_get(args, "certificate")) {
                 ipsec_mech_set = true;
@@ -694,8 +649,8 @@ tnl_port_config_from_nlattr(const struct nlattr *options, size_t options_len,
                             struct nlattr *a[OVS_TUNNEL_ATTR_MAX + 1])
 {
     static const struct nl_policy ovs_tunnel_policy[] = {
-        [OVS_TUNNEL_ATTR_FLAGS] = { .type = NL_A_U32 },
-        [OVS_TUNNEL_ATTR_DST_IPV4] = { .type = NL_A_BE32 },
+        [OVS_TUNNEL_ATTR_FLAGS] = { .type = NL_A_U32, .optional = true },
+        [OVS_TUNNEL_ATTR_DST_IPV4] = { .type = NL_A_BE32, .optional = true },
         [OVS_TUNNEL_ATTR_SRC_IPV4] = { .type = NL_A_BE32, .optional = true },
         [OVS_TUNNEL_ATTR_IN_KEY] = { .type = NL_A_BE64, .optional = true },
         [OVS_TUNNEL_ATTR_OUT_KEY] = { .type = NL_A_BE64, .optional = true },
@@ -725,7 +680,6 @@ unparse_tunnel_config(const char *name OVS_UNUSED, const char *type OVS_UNUSED,
                       struct smap *args)
 {
     struct nlattr *a[OVS_TUNNEL_ATTR_MAX + 1];
-    ovs_be32 daddr;
     uint32_t flags;
     int error;
 
@@ -734,9 +688,10 @@ unparse_tunnel_config(const char *name OVS_UNUSED, const char *type OVS_UNUSED,
         return error;
     }
 
-
-    daddr = nl_attr_get_be32(a[OVS_TUNNEL_ATTR_DST_IPV4]);
-    smap_add_format(args, "remote_ip", IP_FMT, IP_ARGS(daddr));
+    if (a[OVS_TUNNEL_ATTR_DST_IPV4]) {
+        ovs_be32 daddr = nl_attr_get_be32(a[OVS_TUNNEL_ATTR_DST_IPV4]);
+        smap_add_format(args, "remote_ip", IP_FMT, IP_ARGS(daddr));
+    }
 
     if (a[OVS_TUNNEL_ATTR_SRC_IPV4]) {
         ovs_be32 saddr = nl_attr_get_be32(a[OVS_TUNNEL_ATTR_SRC_IPV4]);
@@ -766,7 +721,8 @@ unparse_tunnel_config(const char *name OVS_UNUSED, const char *type OVS_UNUSED,
         }
     }
 
-    flags = nl_attr_get_u32(a[OVS_TUNNEL_ATTR_FLAGS]);
+    flags = get_u32_or_zero(a[OVS_TUNNEL_ATTR_FLAGS]);
+
     if (flags & TNL_F_TTL_INHERIT) {
         smap_add(args, "ttl", "inherit");
     } else if (a[OVS_TUNNEL_ATTR_TTL]) {
@@ -796,9 +752,6 @@ unparse_tunnel_config(const char *name OVS_UNUSED, const char *type OVS_UNUSED,
     }
     if (!(flags & TNL_F_DF_DEFAULT)) {
         smap_add(args, "df_default", "false");
-    }
-    if (flags & TNL_F_PMTUD) {
-        smap_add(args, "pmtud", "true");
     }
 
     return 0;
@@ -927,33 +880,21 @@ unparse_patch_config(const char *name OVS_UNUSED, const char *type OVS_UNUSED,
                                                             \
     netdev_vport_change_seq
 
+#define TUNNEL_CLASS(NAME, VPORT_TYPE)                      \
+    { VPORT_TYPE,                                           \
+        { NAME, VPORT_FUNCTIONS(tunnel_get_status) },       \
+            parse_tunnel_config, unparse_tunnel_config }
+
 void
 netdev_vport_register(void)
 {
     static const struct vport_class vport_classes[] = {
-        { OVS_VPORT_TYPE_GRE,
-          { "gre", VPORT_FUNCTIONS(netdev_vport_get_drv_info) },
-          parse_tunnel_config, unparse_tunnel_config },
-
-        { OVS_VPORT_TYPE_GRE,
-          { "ipsec_gre", VPORT_FUNCTIONS(netdev_vport_get_drv_info) },
-          parse_tunnel_config, unparse_tunnel_config },
-
-        { OVS_VPORT_TYPE_GRE64,
-          { "gre64", VPORT_FUNCTIONS(netdev_vport_get_drv_info) },
-          parse_tunnel_config, unparse_tunnel_config },
-
-        { OVS_VPORT_TYPE_GRE64,
-          { "ipsec_gre64", VPORT_FUNCTIONS(netdev_vport_get_drv_info) },
-          parse_tunnel_config, unparse_tunnel_config },
-
-        { OVS_VPORT_TYPE_CAPWAP,
-          { "capwap", VPORT_FUNCTIONS(netdev_vport_get_drv_info) },
-          parse_tunnel_config, unparse_tunnel_config },
-
-        { OVS_VPORT_TYPE_VXLAN,
-          { "vxlan", VPORT_FUNCTIONS(netdev_vport_get_drv_info) },
-          parse_tunnel_config, unparse_tunnel_config },
+        TUNNEL_CLASS("gre", OVS_VPORT_TYPE_GRE),
+        TUNNEL_CLASS("ipsec_gre", OVS_VPORT_TYPE_GRE),
+        TUNNEL_CLASS("gre64", OVS_VPORT_TYPE_GRE64),
+        TUNNEL_CLASS("ipsec_gre64", OVS_VPORT_TYPE_GRE64),
+        TUNNEL_CLASS("capwap", OVS_VPORT_TYPE_CAPWAP),
+        TUNNEL_CLASS("vxlan", OVS_VPORT_TYPE_VXLAN),
 
         { OVS_VPORT_TYPE_PATCH,
           { "patch", VPORT_FUNCTIONS(NULL) },

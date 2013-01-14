@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2008, 2009, 2010, 2011, 2012 Nicira, Inc.
+ * Copyright (c) 2008, 2009, 2010, 2011, 2012, 2013 Nicira, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -370,8 +370,8 @@ reconnect(struct rconn *rc)
         VLOG_INFO("%s: connecting...", rc->name);
     }
     rc->n_attempted_connections++;
-    retval = vconn_open(rc->target, rc->allowed_versions,
-                        &rc->vconn, rc->dscp);
+    retval = vconn_open(rc->target, rc->allowed_versions, rc->dscp,
+                        &rc->vconn);
     if (!retval) {
         rc->remote_ip = vconn_get_remote_ip(rc->vconn);
         rc->local_ip = vconn_get_local_ip(rc->vconn);
@@ -649,14 +649,13 @@ int
 rconn_send_with_limit(struct rconn *rc, struct ofpbuf *b,
                       struct rconn_packet_counter *counter, int queue_limit)
 {
-    int retval;
-    retval = (counter->n_packets >= queue_limit
-              ? EAGAIN
-              : rconn_send(rc, b, counter));
-    if (retval) {
+    if (counter->n_packets < queue_limit) {
+        return rconn_send(rc, b, counter);
+    } else {
         COVERAGE_INC(rconn_overflow);
+        ofpbuf_delete(b);
+        return EAGAIN;
     }
-    return retval;
 }
 
 /* Returns the total number of packets successfully sent on the underlying

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2008, 2009, 2010, 2011, 2012 Nicira, Inc.
+ * Copyright (c) 2008, 2009, 2010, 2011, 2012, 2013 Nicira, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -21,6 +21,7 @@
 #include <limits.h>
 #include <stdint.h>
 #include <stdlib.h>
+#include <math.h>
 
 #include "coverage.h"
 #include "dynamic-string.h"
@@ -742,7 +743,8 @@ bond_shift_load(struct bond_entry *hash, struct bond_slave *to,
     hash->tag = tag_create_random();
 }
 
-/* Pick and returns a bond_entry to migrate to 'to' (the least-loaded slave),
+/* Picks and returns a bond_entry to migrate from 'from' (the most heavily
+ * loaded bond slave) to a bond slave that has 'to_tx_bytes' bytes of load,
  * given that doing so must decrease the ratio of the load on the two slaves by
  * at least 0.1.  Returns NULL if there is no appropriate entry.
  *
@@ -771,8 +773,12 @@ choose_entry_to_migrate(const struct bond_slave *from, uint64_t to_tx_bytes)
         delta = e->tx_bytes;
         old_ratio = (double)from->tx_bytes / to_tx_bytes;
         new_ratio = (double)(from->tx_bytes - delta) / (to_tx_bytes + delta);
-        if (old_ratio - new_ratio > 0.1) {
-            /* Would decrease the ratio, move it. */
+        if (old_ratio - new_ratio > 0.1
+            && fabs(new_ratio - 1.0) < fabs(old_ratio - 1.0)) {
+            /* We're aiming for an ideal ratio of 1, meaning both the 'from'
+               and 'to' slave have the same load.  Therefore, we only move an
+               entry if it decreases the load on 'from', and brings us closer
+               to equal traffic load. */
             return e;
         }
     }
@@ -859,8 +865,8 @@ bond_rebalance(struct bond *bond, struct tag_set *tags)
             break;
         }
 
-        /* 'from' is carrying significantly more load than 'to', and that load
-         * is split across at least two different hashes. */
+        /* 'from' is carrying significantly more load than 'to'.  Pick a hash
+         * to move from 'from' to 'to'. */
         e = choose_entry_to_migrate(from, to->tx_bytes);
         if (e) {
             bond_shift_load(e, to, tags);
