@@ -7,6 +7,8 @@ post-v1.9.0
       separately on a per-port basis, so it should no longer be
       possible for a large number of new flows arriving on one port to
       prevent new flows from being processed on other ports.
+    - Many "ovs-vsctl" database commands now accept an --if-exists option.
+      Please refer to the ovs-vsctl manpage for details.
     - New "vlog/disable-rate-limit" and "vlog/enable-rate-limit" commands
       available through ovs-appctl allow control over logging rate limits.
     - The OpenFlow "dp_desc" may now be configured by setting the value of 
@@ -17,6 +19,8 @@ post-v1.9.0
         syntax.  OpenFlow 1.1 adds a port named ANY, which introduces a
         conflict.  ANY was rarely used in flow syntax, so we chose to
         retire that meaning of ANY in favor of the OpenFlow 1.1 meaning.
+    - Inheritance of the Don't Fragment bit in IP tunnels (df_inherit) is
+      no longer supported.
 
 
 v1.9.0 - xx xxx xxxx
@@ -27,7 +31,7 @@ v1.9.0 - xx xxx xxxx
     - Datapath:
       - Support for ipv6 set action.
       - SKB mark matching and setting.
-      - support for Linux kernels up to 3.7
+      - support for Linux kernels up to 3.8
     - FreeBSD is now a supported platform, thanks to code contributions from
       Gaetano Catalli, Ed Maste, and Giuseppe Lettieri.
     - ovs-bugtool: New --ovs option to report only OVS related information.
