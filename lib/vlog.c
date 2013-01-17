@@ -46,6 +46,11 @@ VLOG_DEFINE_THIS_MODULE(vlog);
 
 COVERAGE_DEFINE(vlog_recursive);
 
+/* ovs_assert() logs the assertion message, so using ovs_assert() in this
+ * source file could cause recursion. */
+#undef ovs_assert
+#define ovs_assert use_assert_instead_of_ovs_assert_in_this_module
+
 /* Name for each logging level. */
 static const char *level_names[VLL_N_LEVELS] = {
 #define VLOG_LEVEL(NAME, SYSLOG_LEVEL) #NAME,
