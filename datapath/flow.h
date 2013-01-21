@@ -40,6 +40,20 @@ struct sw_flow_actions {
 	struct nlattr actions[];
 };
 
+/* Tunnel flow flags. */
+#define OVS_TNL_F_DONT_FRAGMENT		(1 << 0)
+#define OVS_TNL_F_CSUM			(1 << 1)
+#define OVS_TNL_F_KEY			(1 << 2)
+
+struct ovs_key_ipv4_tunnel {
+	__be64 tun_id;
+	__be32 ipv4_src;
+	__be32 ipv4_dst;
+	u16  tun_flags;
+	u8   ipv4_tos;
+	u8   ipv4_ttl;
+};
+
 struct sw_flow_key {
 	struct ovs_key_ipv4_tunnel tun_key;  /* Encapsulating tunnel key. */
 	struct {
@@ -131,7 +145,7 @@ struct sw_flow *ovs_flow_alloc(void);
 void ovs_flow_deferred_free(struct sw_flow *);
 void ovs_flow_free(struct sw_flow *);
 
-struct sw_flow_actions *ovs_flow_actions_alloc(const struct nlattr *);
+struct sw_flow_actions *ovs_flow_actions_alloc(int actions_len);
 void ovs_flow_deferred_free_acts(struct sw_flow_actions *);
 
 int ovs_flow_extract(struct sk_buff *, u16 in_port, struct sw_flow_key *,
@@ -142,25 +156,32 @@ u64 ovs_flow_used_time(unsigned long flow_jiffies);
 /* Upper bound on the length of a nlattr-formatted flow key.  The longest
  * nlattr-formatted flow key would be:
  *
- *                         struct  pad  nl hdr  total
- *                         ------  ---  ------  -----
- *  OVS_KEY_ATTR_PRIORITY      4    --     4      8
- *  OVS_KEY_ATTR_TUN_ID        8    --     4     12
- *  OVS_KEY_ATTR_IPV4_TUNNEL  24    --     4     28
- *  OVS_KEY_ATTR_IN_PORT       4    --     4      8
- *  OVS_KEY_ATTR_SKB_MARK      4    --     4      8
- *  OVS_KEY_ATTR_ETHERNET     12    --     4     16
- *  OVS_KEY_ATTR_ETHERTYPE     2     2     4      8  (outer VLAN ethertype)
- *  OVS_KEY_ATTR_8021Q         4    --     4      8
- *  OVS_KEY_ATTR_ENCAP         0    --     4      4  (VLAN encapsulation)
- *  OVS_KEY_ATTR_ETHERTYPE     2     2     4      8  (inner VLAN ethertype)
- *  OVS_KEY_ATTR_IPV6         40    --     4     44
- *  OVS_KEY_ATTR_ICMPV6        2     2     4      8
- *  OVS_KEY_ATTR_ND           28    --     4     32
- *  -------------------------------------------------
- *  total                                       192
+ *                                     struct  pad  nl hdr  total
+ *                                     ------  ---  ------  -----
+ *  OVS_KEY_ATTR_PRIORITY                4    --     4      8
+ *  OVS_KEY_ATTR_TUN_ID                  8    --     4     12
+ *  OVS_KEY_ATTR_TUNNEL                  0    --     4      4
+ *  - OVS_TUNNEL_KEY_ATTR_ID             8    --     4     12
+ *  - OVS_TUNNEL_KEY_ATTR_IPV4_SRC       4    --     4      8
+ *  - OVS_TUNNEL_KEY_ATTR_IPV4_DST       4    --     4      8
+ *  - OVS_TUNNEL_KEY_ATTR_TOS            1    3      4      8
+ *  - OVS_TUNNEL_KEY_ATTR_TTL            1    3      4      8
+ *  - OVS_TUNNEL_KEY_ATTR_DONT_FRAGMENT  0    --     4      4
+ *  - OVS_TUNNEL_KEY_ATTR_CSUM           0    --     4      4
+ *  OVS_KEY_ATTR_IN_PORT                 4    --     4      8
+ *  OVS_KEY_ATTR_SKB_MARK                4    --     4      8
+ *  OVS_KEY_ATTR_ETHERNET               12    --     4     16
+ *  OVS_KEY_ATTR_ETHERTYPE               2     2     4      8  (outer VLAN ethertype)
+ *  OVS_KEY_ATTR_8021Q                   4    --     4      8
+ *  OVS_KEY_ATTR_ENCAP                   0    --     4      4  (VLAN encapsulation)
+ *  OVS_KEY_ATTR_ETHERTYPE               2     2     4      8  (inner VLAN ethertype)
+ *  OVS_KEY_ATTR_IPV6                   40    --     4     44
+ *  OVS_KEY_ATTR_ICMPV6                  2     2     4      8
+ *  OVS_KEY_ATTR_ND                     28    --     4     32
+ *  ----------------------------------------------------------
+ *  total                                                 220
  */
-#define FLOW_BUFSIZE 192
+#define FLOW_BUFSIZE 220
 
 int ovs_flow_to_nlattrs(const struct sw_flow_key *, struct sk_buff *);
 int ovs_flow_from_nlattrs(struct sw_flow_key *swkey, int *key_lenp,
@@ -203,5 +224,9 @@ void ovs_flow_tbl_remove(struct flow_table *table, struct sw_flow *flow);
 
 struct sw_flow *ovs_flow_tbl_next(struct flow_table *table, u32 *bucket, u32 *idx);
 extern const int ovs_key_lens[OVS_KEY_ATTR_MAX + 1];
+int ipv4_tun_from_nlattr(const struct nlattr *attr,
+			 struct ovs_key_ipv4_tunnel *tun_key);
+int ipv4_tun_to_nlattr(struct sk_buff *skb,
+			const struct ovs_key_ipv4_tunnel *tun_key);
 
 #endif /* flow.h */
