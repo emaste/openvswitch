@@ -30,6 +30,7 @@
 #include "csum.h"
 #include "dynamic-string.h"
 #include "hash.h"
+#include "jhash.h"
 #include "match.h"
 #include "ofpbuf.h"
 #include "openflow/openflow.h"
@@ -722,7 +723,7 @@ flow_hash_symmetric_l4(const struct flow *flow, uint32_t basis)
             fields.tp_port = flow->tp_src ^ flow->tp_dst;
         }
     }
-    return hash_bytes(&fields, sizeof fields, basis);
+    return jhash_bytes(&fields, sizeof fields, basis);
 }
 
 /* Hashes the portions of 'flow' designated by 'fields'. */
@@ -733,7 +734,7 @@ flow_hash_fields(const struct flow *flow, enum nx_hash_fields fields,
     switch (fields) {
 
     case NX_HASH_FIELDS_ETH_SRC:
-        return hash_bytes(flow->dl_src, sizeof flow->dl_src, basis);
+        return jhash_bytes(flow->dl_src, sizeof flow->dl_src, basis);
 
     case NX_HASH_FIELDS_SYMMETRIC_L4:
         return flow_hash_symmetric_l4(flow, basis);
@@ -1148,7 +1149,7 @@ miniflow_hash_in_minimask(const struct miniflow *flow,
         }
     }
 
-    return mhash_finish(hash, p - mask->masks.values);
+    return mhash_finish(hash, (p - mask->masks.values) * 4);
 }
 
 /* Returns a hash value for the bits of 'flow' where there are 1-bits in
@@ -1177,7 +1178,7 @@ flow_hash_in_minimask(const struct flow *flow, const struct minimask *mask,
         }
     }
 
-    return mhash_finish(hash, p - mask->masks.values);
+    return mhash_finish(hash, (p - mask->masks.values) * 4);
 }
 
 /* Initializes 'dst' as a copy of 'src'.  The caller must eventually free 'dst'
