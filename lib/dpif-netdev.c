@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2009, 2010, 2011, 2012 Nicira, Inc.
+ * Copyright (c) 2009, 2010, 2011, 2012, 2013 Nicira, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -49,6 +49,7 @@
 #include "hmap.h"
 #include "list.h"
 #include "netdev.h"
+#include "netdev-vport.h"
 #include "netlink.h"
 #include "odp-util.h"
 #include "ofp-print.h"
@@ -262,11 +263,17 @@ dpif_netdev_enumerate(struct sset *all_dps)
     return 0;
 }
 
+static bool
+dpif_netdev_class_is_dummy(const struct dpif_class *class)
+{
+    return class != &dpif_netdev_class;
+}
+
 static const char *
 dpif_netdev_port_open_type(const struct dpif_class *class, const char *type)
 {
     return strcmp(type, "internal") ? type
-                  : class != &dpif_netdev_class ? "dummy"
+                  : dpif_netdev_class_is_dummy(class) ? "dummy"
                   : "tap";
 }
 
@@ -594,7 +601,8 @@ do_add_port(struct dp_netdev *dp, const char *devname, const char *type,
     /* XXX reject non-Ethernet devices */
 
     error = netdev_listen(netdev);
-    if (error) {
+    if (error
+        && !(error == EOPNOTSUPP && dpif_netdev_class_is_dummy(dp->class))) {
         VLOG_ERR("%s: cannot receive packets on this network device (%s)",
                  devname, strerror(errno));
         netdev_close(netdev);
@@ -644,11 +652,11 @@ dpif_netdev_port_add(struct dpif *dpif, struct netdev *netdev,
         }
         port_no = *port_nop;
     } else {
-        port_no = choose_port(dp, netdev_get_name(netdev));
+        port_no = choose_port(dp, netdev_vport_get_dpif_port(netdev));
     }
     if (port_no >= 0) {
         *port_nop = port_no;
-        return do_add_port(dp, netdev_get_name(netdev),
+        return do_add_port(dp, netdev_vport_get_dpif_port(netdev),
                            netdev_get_type(netdev), port_no);
     }
     return EFBIG;
@@ -697,7 +705,7 @@ get_port_by_name(struct dp_netdev *dp,
 
     LOCK(&dp->port_list_mutex);
     LIST_FOR_EACH (port, node, &dp->port_list) {
-        if (!strcmp(netdev_get_name(port->netdev), devname)) {
+        if (!strcmp(netdev_vport_get_dpif_port(port->netdev), devname)) {
             *portp = port;
             UNLOCK(&dp->port_list_mutex);
             return 0;
@@ -724,7 +732,7 @@ do_del_port(struct dp_netdev *dp, uint32_t port_no)
     dp->ports[port->port_no] = NULL;
     dp->serial++;
 
-    name = xstrdup(netdev_get_name(port->netdev));
+    name = xstrdup(netdev_vport_get_dpif_port(port->netdev));
     netdev_close(port->netdev);
     free(port->type);
 
@@ -738,7 +746,7 @@ static void
 answer_port_query(const struct dp_netdev_port *port,
                   struct dpif_port *dpif_port)
 {
-    dpif_port->name = xstrdup(netdev_get_name(port->netdev));
+    dpif_port->name = xstrdup(netdev_vport_get_dpif_port(port->netdev));
     dpif_port->type = xstrdup(port->type);
     dpif_port->port_no = port->port_no;
 }
@@ -831,7 +839,7 @@ dpif_netdev_port_dump_next(const struct dpif *dpif, void *state_,
         struct dp_netdev_port *port = dp->ports[port_no];
         if (port) {
             free(state->name);
-            state->name = xstrdup(netdev_get_name(port->netdev));
+            state->name = xstrdup(netdev_vport_get_dpif_port(port->netdev));
             dpif_port->name = state->name;
             dpif_port->type = port->type;
             dpif_port->port_no = port->port_no;
@@ -1378,7 +1386,8 @@ dpif_netdev_run(struct dpif *dpif)
         } else if (error != EAGAIN && error != EOPNOTSUPP) {
             static struct vlog_rate_limit rl = VLOG_RATE_LIMIT_INIT(1, 5);
             VLOG_ERR_RL(&rl, "error receiving data from %s: %s",
-                        netdev_get_name(port->netdev), strerror(error));
+                        netdev_vport_get_dpif_port(port->netdev),
+                        strerror(error));
         }
     }
     ofpbuf_uninit(&packet);

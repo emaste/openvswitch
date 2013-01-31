@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2008, 2009, 2010, 2011, 2012 Nicira, Inc.
+ * Copyright (c) 2008, 2009, 2010, 2011, 2012, 2013 Nicira, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -421,15 +421,70 @@ dpif_linux_get_stats(const struct dpif *dpif_, struct dpif_dp_stats *stats)
     return error;
 }
 
+static const char *
+get_vport_type(const struct dpif_linux_vport *vport)
+{
+    static struct vlog_rate_limit rl = VLOG_RATE_LIMIT_INIT(5, 20);
+
+    switch (vport->type) {
+    case OVS_VPORT_TYPE_NETDEV:
+        return "system";
+
+    case OVS_VPORT_TYPE_INTERNAL:
+        return "internal";
+
+    case OVS_VPORT_TYPE_GRE:
+        return "gre";
+
+    case OVS_VPORT_TYPE_GRE64:
+        return "gre64";
+
+    case OVS_VPORT_TYPE_CAPWAP:
+        return "capwap";
+
+    case OVS_VPORT_TYPE_VXLAN:
+        return "vxlan";
+
+    case OVS_VPORT_TYPE_UNSPEC:
+    case __OVS_VPORT_TYPE_MAX:
+        break;
+    }
+
+    VLOG_WARN_RL(&rl, "dp%d: port `%s' has unsupported type %u",
+                 vport->dp_ifindex, vport->name, (unsigned int) vport->type);
+    return "unknown";
+}
+
+static enum ovs_vport_type
+netdev_to_ovs_vport_type(const struct netdev *netdev)
+{
+    const char *type = netdev_get_type(netdev);
+
+    if (!strcmp(type, "tap") || !strcmp(type, "system")) {
+        return OVS_VPORT_TYPE_NETDEV;
+    } else if (!strcmp(type, "internal")) {
+        return OVS_VPORT_TYPE_INTERNAL;
+    } else if (strstr(type, "gre64")) {
+        return OVS_VPORT_TYPE_GRE64;
+    } else if (strstr(type, "gre")) {
+        return OVS_VPORT_TYPE_GRE;
+    } else if (!strcmp(type, "capwap")) {
+        return OVS_VPORT_TYPE_CAPWAP;
+    } else if (!strcmp(type, "vxlan")) {
+        return OVS_VPORT_TYPE_VXLAN;
+    } else {
+        return OVS_VPORT_TYPE_UNSPEC;
+    }
+}
+
 static int
 dpif_linux_port_add(struct dpif *dpif_, struct netdev *netdev,
                     uint32_t *port_nop)
 {
     struct dpif_linux *dpif = dpif_linux_cast(dpif_);
-    const char *name = netdev_get_name(netdev);
+    const char *name = netdev_vport_get_dpif_port(netdev);
     const char *type = netdev_get_type(netdev);
     struct dpif_linux_vport request, reply;
-    const struct ofpbuf *options;
     struct nl_sock *sock = NULL;
     uint32_t upcall_pid;
     struct ofpbuf *buf;
@@ -445,7 +500,7 @@ dpif_linux_port_add(struct dpif *dpif_, struct netdev *netdev,
     dpif_linux_vport_init(&request);
     request.cmd = OVS_VPORT_CMD_NEW;
     request.dp_ifindex = dpif->dp_ifindex;
-    request.type = netdev_vport_get_vport_type(netdev);
+    request.type = netdev_to_ovs_vport_type(netdev);
     if (request.type == OVS_VPORT_TYPE_UNSPEC) {
         VLOG_WARN_RL(&error_rl, "%s: cannot create port `%s' because it has "
                      "unsupported type `%s'",
@@ -454,12 +509,6 @@ dpif_linux_port_add(struct dpif *dpif_, struct netdev *netdev,
         return EINVAL;
     }
     request.name = name;
-
-    options = netdev_vport_get_options(netdev);
-    if (options && options->size) {
-        request.options = options->data;
-        request.options_len = options->size;
-    }
 
     if (request.type == OVS_VPORT_TYPE_NETDEV) {
         netdev_linux_ethtool_set_flag(netdev, ETH_FLAG_LRO, "LRO", false);
@@ -547,7 +596,7 @@ dpif_linux_port_query__(const struct dpif *dpif, uint32_t port_no,
             error = ENODEV;
         } else if (dpif_port) {
             dpif_port->name = xstrdup(reply.name);
-            dpif_port->type = xstrdup(netdev_vport_get_netdev_type(&reply));
+            dpif_port->type = xstrdup(get_vport_type(&reply));
             dpif_port->port_no = reply.port_no;
         }
         ofpbuf_delete(buf);
@@ -647,7 +696,7 @@ dpif_linux_port_dump_next(const struct dpif *dpif OVS_UNUSED, void *state_,
     }
 
     dpif_port->name = CONST_CAST(char *, vport.name);
-    dpif_port->type = CONST_CAST(char *, netdev_vport_get_netdev_type(&vport));
+    dpif_port->type = CONST_CAST(char *, get_vport_type(&vport));
     dpif_port->port_no = vport.port_no;
     return 0;
 }
@@ -1465,10 +1514,6 @@ dpif_linux_vport_from_ofpbuf(struct dpif_linux_vport *vport,
         [OVS_VPORT_ATTR_UPCALL_PID] = { .type = NL_A_U32 },
         [OVS_VPORT_ATTR_STATS] = { NL_POLICY_FOR(struct ovs_vport_stats),
                                    .optional = true },
-        [OVS_VPORT_ATTR_ADDRESS] = { .type = NL_A_UNSPEC,
-                                     .min_len = ETH_ADDR_LEN,
-                                     .max_len = ETH_ADDR_LEN,
-                                     .optional = true },
         [OVS_VPORT_ATTR_OPTIONS] = { .type = NL_A_NESTED, .optional = true },
     };
 
@@ -1501,9 +1546,6 @@ dpif_linux_vport_from_ofpbuf(struct dpif_linux_vport *vport,
     }
     if (a[OVS_VPORT_ATTR_STATS]) {
         vport->stats = nl_attr_get(a[OVS_VPORT_ATTR_STATS]);
-    }
-    if (a[OVS_VPORT_ATTR_ADDRESS]) {
-        vport->address = nl_attr_get(a[OVS_VPORT_ATTR_ADDRESS]);
     }
     if (a[OVS_VPORT_ATTR_OPTIONS]) {
         vport->options = nl_attr_get(a[OVS_VPORT_ATTR_OPTIONS]);
@@ -1545,11 +1587,6 @@ dpif_linux_vport_to_ofpbuf(const struct dpif_linux_vport *vport,
     if (vport->stats) {
         nl_msg_put_unspec(buf, OVS_VPORT_ATTR_STATS,
                           vport->stats, sizeof *vport->stats);
-    }
-
-    if (vport->address) {
-        nl_msg_put_unspec(buf, OVS_VPORT_ATTR_ADDRESS,
-                          vport->address, ETH_ADDR_LEN);
     }
 
     if (vport->options) {
@@ -1929,7 +1966,7 @@ report_loss(struct dpif *dpif_, struct dpif_channel *ch)
     static struct vlog_rate_limit rl = VLOG_RATE_LIMIT_INIT(5, 5);
     struct ds s;
 
-    if (VLOG_DROP_ERR(&rl)) {
+    if (VLOG_DROP_WARN(&rl)) {
         return;
     }
 

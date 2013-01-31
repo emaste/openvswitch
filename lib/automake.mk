@@ -92,6 +92,8 @@ lib_libopenvswitch_a_SOURCES = \
 	lib/multipath.h \
 	lib/netdev-dummy.c \
 	lib/netdev-provider.h \
+	lib/netdev-vport.c \
+	lib/netdev-vport.h \
 	lib/netdev.c \
 	lib/netdev.h \
 	lib/netflow.h \
@@ -238,8 +240,6 @@ lib_libopenvswitch_a_SOURCES += \
 	lib/dpif-linux.h \
 	lib/netdev-linux.c \
 	lib/netdev-linux.h \
-	lib/netdev-vport.c \
-	lib/netdev-vport.h \
 	lib/netlink-notifier.c \
 	lib/netlink-notifier.h \
 	lib/netlink-protocol.h \

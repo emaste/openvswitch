@@ -39,9 +39,7 @@
 static const struct vport_ops *base_vport_ops_list[] = {
 	&ovs_netdev_vport_ops,
 	&ovs_internal_vport_ops,
-	&ovs_patch_vport_ops,
 	&ovs_gre_vport_ops,
-	&ovs_gre_ft_vport_ops,
 	&ovs_gre64_vport_ops,
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,26)
 	&ovs_capwap_vport_ops,
@@ -283,29 +281,6 @@ void ovs_vport_del(struct vport *vport)
 	hlist_del_rcu(&vport->hash_node);
 
 	vport->ops->destroy(vport);
-}
-
-/**
- *	ovs_vport_set_addr - set device Ethernet address (for kernel callers)
- *
- * @vport: vport on which to set Ethernet address.
- * @addr: New address.
- *
- * Sets the Ethernet address of the given device.  Some devices may not support
- * setting the Ethernet address, in which case the result will always be
- * -EOPNOTSUPP.  RTNL lock must be held.
- */
-int ovs_vport_set_addr(struct vport *vport, const unsigned char *addr)
-{
-	ASSERT_RTNL();
-
-	if (!is_valid_ether_addr(addr))
-		return -EADDRNOTAVAIL;
-
-	if (vport->ops->set_addr)
-		return vport->ops->set_addr(vport, addr);
-	else
-		return -EOPNOTSUPP;
 }
 
 /**

@@ -182,11 +182,9 @@ enum ovs_vport_type {
 	OVS_VPORT_TYPE_UNSPEC,
 	OVS_VPORT_TYPE_NETDEV,   /* network device */
 	OVS_VPORT_TYPE_INTERNAL, /* network device implemented by datapath */
-	OVS_VPORT_TYPE_FT_GRE,	 /* Flow based GRE tunnel. */
+	OVS_VPORT_TYPE_GRE,	 /* GRE tunnel. */
 	OVS_VPORT_TYPE_VXLAN,    /* VXLAN tunnel */
-	OVS_VPORT_TYPE_PATCH = 100, /* virtual tunnel connecting two vports */
-	OVS_VPORT_TYPE_GRE,      /* GRE tunnel */
-	OVS_VPORT_TYPE_CAPWAP,   /* CAPWAP tunnel */
+	OVS_VPORT_TYPE_CAPWAP = 102,  /* CAPWAP tunnel */
 	OVS_VPORT_TYPE_GRE64 = 104, /* GRE tunnel with 64-bit keys */
 	__OVS_VPORT_TYPE_MAX
 };
@@ -207,7 +205,6 @@ enum ovs_vport_type {
  * this port.  A value of zero indicates that upcalls should not be sent.
  * @OVS_VPORT_ATTR_STATS: A &struct ovs_vport_stats giving statistics for
  * packets sent or received through the vport.
- * @OVS_VPORT_ATTR_ADDRESS: A 6-byte Ethernet address for the vport.
  *
  * These attributes follow the &struct ovs_header within the Generic Netlink
  * payload for %OVS_VPORT_* commands.
@@ -216,8 +213,8 @@ enum ovs_vport_type {
  * %OVS_VPORT_ATTR_NAME attributes are required.  %OVS_VPORT_ATTR_PORT_NO is
  * optional; if not specified a free port number is automatically selected.
  * Whether %OVS_VPORT_ATTR_OPTIONS is required or optional depends on the type
- * of vport.  %OVS_VPORT_ATTR_STATS and %OVS_VPORT_ATTR_ADDRESS are optional,
- * and other attributes are ignored.
+ * of vport.  %OVS_VPORT_ATTR_STATS is optional and other attributes are
+ * ignored.
  *
  * For other requests, if %OVS_VPORT_ATTR_NAME is specified then it is used to
  * look up the vport to operate on; otherwise dp_idx from the &struct
@@ -231,7 +228,6 @@ enum ovs_vport_attr {
 	OVS_VPORT_ATTR_OPTIONS, /* nested attributes, varies by vport type */
 	OVS_VPORT_ATTR_UPCALL_PID, /* u32 Netlink PID to receive upcalls */
 	OVS_VPORT_ATTR_STATS,	/* struct ovs_vport_stats */
-	OVS_VPORT_ATTR_ADDRESS = 100, /* hardware address */
 	__OVS_VPORT_ATTR_MAX
 };
 
