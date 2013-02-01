@@ -1445,6 +1445,7 @@ mf_set_wild(const struct mf_field *mf, struct match *match)
 
     case MFF_METADATA:
         match_set_metadata_masked(match, htonll(0), htonll(0));
+        break;
 
     case MFF_IN_PORT:
         match->flow.in_port = 0;
@@ -2235,15 +2236,12 @@ mf_format_integer_string(const struct mf_field *mf, const uint8_t *valuep,
 }
 
 static void
-mf_format_frag_string(const uint8_t *valuep, const uint8_t *maskp,
-                      struct ds *s)
+mf_format_frag_string(uint8_t value, uint8_t mask, struct ds *s)
 {
     const struct frag_handling *h;
-    uint8_t value = *valuep;
-    uint8_t mask = *maskp;
 
-    value &= mask;
     mask &= FLOW_NW_FRAG_MASK;
+    value &= mask;
 
     for (h = all_frags; h < &all_frags[ARRAY_SIZE(all_frags)]; h++) {
         if (value == h->value && mask == h->mask) {
@@ -2302,7 +2300,7 @@ mf_format(const struct mf_field *mf,
         break;
 
     case MFS_FRAG:
-        mf_format_frag_string(&value->u8, &mask->u8, s);
+        mf_format_frag_string(value->u8, mask ? mask->u8 : UINT8_MAX, s);
         break;
 
     case MFS_TNL_FLAGS:
