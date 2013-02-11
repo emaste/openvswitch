@@ -375,8 +375,8 @@ pop_mpls(struct ofpbuf *packet, ovs_be16 ethtype)
         len = (char*)packet->l2_5 - (char*)packet->l2;
         /* If bottom of the stack set ethertype. */
         if (mh->mpls_lse & htonl(MPLS_BOS_MASK)) {
-            packet->l2_5 = NULL;
             set_ethertype(packet, ethtype);
+            packet->l2_5 = NULL;
         } else {
             packet->l2_5 = (char*)packet->l2_5 + MPLS_HLEN;
         }
@@ -887,7 +887,9 @@ packet_set_udp_port(struct ofpbuf *packet, ovs_be16 src, ovs_be16 dst)
 uint8_t
 packet_get_tcp_flags(const struct ofpbuf *packet, const struct flow *flow)
 {
-    if (is_ip_any(flow) && flow->nw_proto == IPPROTO_TCP && packet->l7) {
+    ovs_be16 dl_type = flow_innermost_dl_type(flow);
+    if (dl_type_is_ip_any(dl_type) &&
+        flow->nw_proto == IPPROTO_TCP && packet->l7) {
         const struct tcp_header *tcp = packet->l4;
         return TCP_FLAGS(tcp->tcp_ctl);
     } else {
