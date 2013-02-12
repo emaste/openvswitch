@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2009, 2010, 2011, 2012 Nicira, Inc.
+ * Copyright (c) 2009, 2010, 2011, 2012, 2013 Nicira, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -33,11 +33,19 @@ static struct cls_table *insert_table(struct classifier *,
 
 static void destroy_table(struct classifier *, struct cls_table *);
 
+static void update_tables_after_insertion(struct classifier *,
+                                          struct cls_table *,
+                                          unsigned int new_priority);
+static void update_tables_after_removal(struct classifier *,
+                                        struct cls_table *,
+                                        unsigned int del_priority);
+
 static struct cls_rule *find_match(const struct cls_table *,
                                    const struct flow *);
 static struct cls_rule *find_equal(struct cls_table *,
                                    const struct miniflow *, uint32_t hash);
-static struct cls_rule *insert_rule(struct cls_table *, struct cls_rule *);
+static struct cls_rule *insert_rule(struct classifier *,
+                                    struct cls_table *, struct cls_rule *);
 
 /* Iterates RULE over HEAD and all of the cls_rules on HEAD->list. */
 #define FOR_EACH_RULE_IN_LIST(RULE, HEAD)                               \
@@ -134,6 +142,7 @@ classifier_init(struct classifier *cls)
 {
     cls->n_rules = 0;
     hmap_init(&cls->tables);
+    list_init(&cls->tables_priority);
 }
 
 /* Destroys 'cls'.  Rules within 'cls', if any, are not freed; this is the
@@ -189,7 +198,7 @@ classifier_replace(struct classifier *cls, struct cls_rule *rule)
         table = insert_table(cls, &rule->match.mask);
     }
 
-    old_rule = insert_rule(table, rule);
+    old_rule = insert_rule(cls, table, rule);
     if (!old_rule) {
         table->n_table_rules++;
         cls->n_rules++;
@@ -235,20 +244,8 @@ classifier_remove(struct classifier *cls, struct cls_rule *rule)
 
     if (--table->n_table_rules == 0) {
         destroy_table(cls, table);
-    } else if (rule->priority == table->max_priority
-               && --table->max_count == 0) {
-        /* Maintain table's max_priority. */
-        struct cls_rule *head;
-
-        table->max_priority = 0;
-        HMAP_FOR_EACH (head, hmap_node, &table->rules) {
-            if (head->priority > table->max_priority) {
-                table->max_priority = head->priority;
-                table->max_count = 1;
-            } else if (head->priority == table->max_priority) {
-                ++table->max_count;
-            }
-        }
+    } else {
+        update_tables_after_removal(cls, table, rule->priority);
     }
     cls->n_rules--;
 }
@@ -263,15 +260,22 @@ classifier_lookup(const struct classifier *cls, const struct flow *flow)
     struct cls_rule *best;
 
     best = NULL;
-    HMAP_FOR_EACH (table, hmap_node, &cls->tables) {
-        /* Find only if there is hope.
-         * Would be even better to search the tables in the descending
-         * order of max_priority. */
-        if (!best || table->max_priority > best->priority) {
-            struct cls_rule *rule = find_match(table, flow);
-            if (rule && (!best || rule->priority > best->priority)) {
-                best = rule;
+    LIST_FOR_EACH (table, list_node, &cls->tables_priority) {
+        struct cls_rule *rule = find_match(table, flow);
+        if (rule) {
+            best = rule;
+            LIST_FOR_EACH_CONTINUE (table, list_node, &cls->tables_priority) {
+                if (table->max_priority <= best->priority) {
+                    /* Tables in descending priority order,
+                     * can not find anything better. */
+                    return best;
+                }
+                rule = find_match(table, flow);
+                if (rule && rule->priority > best->priority) {
+                    best = rule;
+                }
             }
+            break;
         }
     }
     return best;
@@ -335,13 +339,14 @@ classifier_rule_overlaps(const struct classifier *cls,
 {
     struct cls_table *table;
 
-    HMAP_FOR_EACH (table, hmap_node, &cls->tables) {
+    /* Iterate tables in the descending max priority order. */
+    LIST_FOR_EACH (table, list_node, &cls->tables_priority) {
         uint32_t storage[FLOW_U32S];
         struct minimask mask;
         struct cls_rule *head;
 
         if (target->priority > table->max_priority) {
-            continue; /* Can skip this table. */
+            break; /* Can skip this and the rest of the tables. */
         }
 
         minimask_combine(&mask, &target->match.mask, &table->mask, storage);
@@ -524,6 +529,7 @@ insert_table(struct classifier *cls, const struct minimask *mask)
     hmap_init(&table->rules);
     minimask_clone(&table->mask, mask);
     hmap_insert(&cls->tables, &table->hmap_node, minimask_hash(mask, 0));
+    list_push_back(&cls->tables_priority, &table->list_node);
 
     return table;
 }
@@ -534,7 +540,98 @@ destroy_table(struct classifier *cls, struct cls_table *table)
     minimask_destroy(&table->mask);
     hmap_remove(&cls->tables, &table->hmap_node);
     hmap_destroy(&table->rules);
+    list_remove(&table->list_node);
     free(table);
+}
+
+/* This function performs the following updates for 'table' in 'cls' following
+ * the addition of a new rule with priority 'new_priority' to 'table':
+ *
+ *    - Update 'table->max_priority' and 'table->max_count' if necessary.
+ *
+ *    - Update 'table''s position in 'cls->tables_priority' if necessary.
+ *
+ * This function should only be called after adding a new rule, not after
+ * replacing a rule by an identical one or modifying a rule in-place. */
+static void
+update_tables_after_insertion(struct classifier *cls, struct cls_table *table,
+                              unsigned int new_priority)
+{
+    if (new_priority == table->max_priority) {
+        ++table->max_count;
+    } else if (new_priority > table->max_priority) {
+        struct cls_table *iter;
+
+        table->max_priority = new_priority;
+        table->max_count = 1;
+
+        /* Possibly move 'table' earlier in the priority list.  If we break out
+         * of the loop, then 'table' should be moved just after that 'iter'.
+         * If the loop terminates normally, then 'iter' will be the list head
+         * and we'll move table just after that (e.g. to the front of the
+         * list). */
+        iter = table;
+        LIST_FOR_EACH_REVERSE_CONTINUE (iter, list_node,
+                                        &cls->tables_priority) {
+            if (iter->max_priority >= table->max_priority) {
+                break;
+            }
+        }
+
+        /* Move 'table' just after 'iter' (unless it's already there). */
+        if (iter->list_node.next != &table->list_node) {
+            list_splice(iter->list_node.next,
+                        &table->list_node, table->list_node.next);
+        }
+    }
+}
+
+/* This function performs the following updates for 'table' in 'cls' following
+ * the deletion of a rule with priority 'del_priority' from 'table':
+ *
+ *    - Update 'table->max_priority' and 'table->max_count' if necessary.
+ *
+ *    - Update 'table''s position in 'cls->tables_priority' if necessary.
+ *
+ * This function should only be called after removing a rule, not after
+ * replacing a rule by an identical one or modifying a rule in-place. */
+static void
+update_tables_after_removal(struct classifier *cls, struct cls_table *table,
+                            unsigned int del_priority)
+{
+    struct cls_table *iter;
+
+    if (del_priority == table->max_priority && --table->max_count == 0) {
+        struct cls_rule *head;
+
+        table->max_priority = 0;
+        HMAP_FOR_EACH (head, hmap_node, &table->rules) {
+            if (head->priority > table->max_priority) {
+                table->max_priority = head->priority;
+                table->max_count = 1;
+            } else if (head->priority == table->max_priority) {
+                ++table->max_count;
+            }
+        }
+
+        /* Possibly move 'table' later in the priority list.  If we break out
+         * of the loop, then 'table' should be moved just before that 'iter'.
+         * If the loop terminates normally, then 'iter' will be the list head
+         * and we'll move table just before that (e.g. to the back of the
+         * list). */
+        iter = table;
+        LIST_FOR_EACH_CONTINUE (iter, list_node, &cls->tables_priority) {
+            if (iter->max_priority <= table->max_priority) {
+                break;
+            }
+        }
+
+        /* Move 'table' just before 'iter' (unless it's already there). */
+        if (iter->list_node.prev != &table->list_node) {
+            list_splice(&iter->list_node,
+                        &table->list_node, table->list_node.next);
+        }
+    }
 }
 
 static struct cls_rule *
@@ -567,7 +664,8 @@ find_equal(struct cls_table *table, const struct miniflow *flow, uint32_t hash)
 }
 
 static struct cls_rule *
-insert_rule(struct cls_table *table, struct cls_rule *new)
+insert_rule(struct classifier *cls,
+            struct cls_table *table, struct cls_rule *new)
 {
     struct cls_rule *head;
     struct cls_rule *old = NULL;
@@ -608,14 +706,9 @@ insert_rule(struct cls_table *table, struct cls_rule *new)
     }
 
  out:
-    if (new->priority > table->max_priority) {
-        table->max_priority = new->priority;
-        table->max_count = 1;
-    } else if (!old && new->priority == table->max_priority) {
-        /* Only if we are not replacing an old entry. */
-        ++table->max_count;
+    if (!old) {
+        update_tables_after_insertion(cls, table, new->priority);
     }
-
     return old;
 }
 
