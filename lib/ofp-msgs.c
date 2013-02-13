@@ -320,6 +320,23 @@ ofpraw_decode(enum ofpraw *raw, const struct ofp_header *oh)
     return ofpraw_pull(raw, &msg);
 }
 
+/* Does the same job as ofpraw_decode(), except that it assert-fails if
+ * ofpraw_decode() would have reported an error.  Thus, it's able to use the
+ * return value for the OFPRAW_* message type instead of an error code.
+ *
+ * (It only makes sense to use this function if you previously called
+ * ofpraw_decode() on the message and thus know that it's OK.) */
+enum ofpraw
+ofpraw_decode_assert(const struct ofp_header *oh)
+{
+    enum ofperr error;
+    enum ofpraw raw;
+
+    error = ofpraw_decode(&raw, oh);
+    ovs_assert(!error);
+    return raw;
+}
+
 /* Determines the OFPRAW_* type of the OpenFlow message in 'msg', which starts
  * at 'msg->data' and has length 'msg->size' bytes.  On success, returns 0 and
  * stores the type into '*rawp'.  On failure, returns an OFPERR_* error code
@@ -403,11 +420,11 @@ ofpraw_pull(enum ofpraw *rawp, struct ofpbuf *msg)
 }
 
 /* Does the same job as ofpraw_pull(), except that it assert-fails if
- * ofpbuf_pull() would have reported an error.  Thus, it's able to use the
+ * ofpraw_pull() would have reported an error.  Thus, it's able to use the
  * return value for the OFPRAW_* message type instead of an error code.
  *
  * (It only makes sense to use this function if you previously called
- * ofpbuf_decode() on the message and thus know that it's OK.) */
+ * ofpraw_decode() on the message and thus know that it's OK.) */
 enum ofpraw
 ofpraw_pull_assert(struct ofpbuf *msg)
 {
@@ -834,6 +851,8 @@ ofpmp_reserve(struct list *replies, size_t len)
 
         next = ofpbuf_new(MAX(1024, hdrs_len + len));
         ofpbuf_put(next, msg->data, hdrs_len);
+        next->l2 = next->data;
+        next->l3 = ofpbuf_tail(next);
         list_push_back(replies, &next->list_node);
 
         *ofpmp_flags__(msg->data) |= htons(OFPSF_REPLY_MORE);
