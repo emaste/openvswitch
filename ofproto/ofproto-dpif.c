@@ -3888,7 +3888,16 @@ classify_upcall(const struct dpif_upcall *upcall)
     }
 
     /* "action" upcalls need a closer look. */
-    memcpy(&cookie, &upcall->userdata, sizeof(cookie));
+    if (!upcall->userdata) {
+        VLOG_WARN_RL(&rl, "action upcall missing cookie");
+        return BAD_UPCALL;
+    }
+    if (nl_attr_get_size(upcall->userdata) != sizeof(cookie)) {
+        VLOG_WARN_RL(&rl, "action upcall cookie has unexpected size %zu",
+                     nl_attr_get_size(upcall->userdata));
+        return BAD_UPCALL;
+    }
+    memcpy(&cookie, nl_attr_get(upcall->userdata), sizeof(cookie));
     switch (cookie.type) {
     case USER_ACTION_COOKIE_SFLOW:
         return SFLOW_UPCALL;
@@ -3898,7 +3907,8 @@ classify_upcall(const struct dpif_upcall *upcall)
 
     case USER_ACTION_COOKIE_UNSPEC:
     default:
-        VLOG_WARN_RL(&rl, "invalid user cookie : 0x%"PRIx64, upcall->userdata);
+        VLOG_WARN_RL(&rl, "invalid user cookie : 0x%"PRIx64,
+                     nl_attr_get_u64(upcall->userdata));
         return BAD_UPCALL;
     }
 }
@@ -3918,7 +3928,7 @@ handle_sflow_upcall(struct dpif_backer *backer,
         return;
     }
 
-    memcpy(&cookie, &upcall->userdata, sizeof(cookie));
+    memcpy(&cookie, nl_attr_get(upcall->userdata), sizeof(cookie));
     dpif_sflow_received(ofproto->sflow, upcall->packet, &flow,
                         odp_in_port, &cookie);
 }
@@ -5578,7 +5588,7 @@ compose_slow_path(const struct ofproto_dpif *ofproto, const struct flow *flow,
     ofpbuf_use_stack(&buf, stub, stub_size);
     if (slow & (SLOW_CFM | SLOW_LACP | SLOW_STP)) {
         uint32_t pid = dpif_port_get_pid(ofproto->backer->dpif, UINT32_MAX);
-        odp_put_userspace_action(pid, &cookie, &buf);
+        odp_put_userspace_action(pid, &cookie, sizeof cookie, &buf);
     } else {
         put_userspace_action(ofproto, &buf, flow, &cookie);
     }
@@ -5597,7 +5607,7 @@ put_userspace_action(const struct ofproto_dpif *ofproto,
     pid = dpif_port_get_pid(ofproto->backer->dpif,
                             ofp_port_to_odp_port(ofproto, flow->in_port));
 
-    return odp_put_userspace_action(pid, cookie, odp_actions);
+    return odp_put_userspace_action(pid, cookie, sizeof *cookie, odp_actions);
 }
 
 static void
@@ -5728,6 +5738,7 @@ compose_output_action__(struct action_xlate_ctx *ctx, uint16_t ofp_port,
         struct ofport_dpif *peer = ofport_get_peer(ofport);
         struct flow old_flow = ctx->flow;
         const struct ofproto_dpif *peer_ofproto;
+        enum slow_path_reason special;
         struct ofport_dpif *in_port;
 
         if (!peer) {
@@ -5748,7 +5759,11 @@ compose_output_action__(struct action_xlate_ctx *ctx, uint16_t ofp_port,
         memset(ctx->flow.regs, 0, sizeof ctx->flow.regs);
 
         in_port = get_ofp_port(ctx->ofproto, ctx->flow.in_port);
-        if (!in_port || may_receive(in_port, ctx)) {
+        special = process_special(ctx->ofproto, &ctx->flow, in_port,
+                                  ctx->packet);
+        if (special) {
+            ctx->slow |= special;
+        } else if (!in_port || may_receive(in_port, ctx)) {
             if (!in_port || stp_forward_in_state(in_port->stp_state)) {
                 xlate_table_action(ctx, ctx->flow.in_port, 0, true);
             } else {
