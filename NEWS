@@ -3,6 +3,9 @@ post-v1.10.0
     - Stable bond mode has been removed.
     - The autopath action has been removed.
     - CAPWAP tunneling support removed.
+    - New support for the data encapsulation format of the LISP tunnel
+      protocol (RFC 6830).  An external control plane or manual flow
+      setup is required for EID-to-RLOC mapping.
 
 
 v1.10.0 - xx xxx xxxx
@@ -28,7 +31,7 @@ v1.10.0 - xx xxx xxxx
         "ofport_request" column in the Interface table.
     - Tunneling:
       - New support for the VXLAN tunnel protocol (see the IETF draft here:
-        http://tools.ietf.org/html/draft-mahalingam-dutt-dcops-vxlan-02).
+        http://tools.ietf.org/html/draft-mahalingam-dutt-dcops-vxlan-03).
       - Tunneling requires the version of the kernel module paired with
         Open vSwitch 1.9.0 or later.
       - Inheritance of the Don't Fragment bit in IP tunnels (df_inherit)

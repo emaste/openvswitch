@@ -167,7 +167,7 @@ Q: What features are not available in the Open vSwitch kernel datapath
 
 A: The kernel module in upstream Linux 3.3 and later does not include
    tunnel virtual ports, that is, interfaces with type "gre",
-   "ipsec_gre", "gre64", "ipsec_gre64", or "vxlan".  It is
+   "ipsec_gre", "gre64", "ipsec_gre64", "vxlan", or "lisp".  It is
    possible to create tunnels in Linux and attach them to Open vSwitch
    as system devices.  However, they cannot be dynamically created
    through the OVSDB protocol or set the tunnel ids as a flow action.
@@ -574,6 +574,11 @@ A: Suppose that you want to set up bridge br0 connected to physical
    that you want to keep, is:
 
        ovs-vsctl -- --all destroy QoS -- --all destroy Queue
+
+   If you do want to keep some QoS or Queue records, or the Open
+   vSwitch you are using is older than version 1.8 (which added the
+   --all option), then you will have to destroy QoS and Queue records
+   individually.
 
 Q: I configured Quality of Service (QoS) in my OpenFlow network by
    adding records to the QoS and Queue table, but the results aren't

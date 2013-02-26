@@ -219,6 +219,8 @@ caps = {}
 cap_sizes = {}
 unlimited_data = False
 dbg = False
+# Default value for the number of rotated logs.
+log_days = 20
 
 def cap(key, pii=PII_MAYBE, min_size=-1, max_size=-1, min_time=-1,
         max_time=-1, mime=MIME_TEXT, checked=True, hidden=False):
@@ -267,7 +269,7 @@ def output(x):
 def output_ts(x):
     output("[%s]  %s" % (time.strftime("%x %X %Z"), x))
 
-def cmd_output(cap, args, label=None, filter=None):
+def cmd_output(cap, args, label=None, filter=None, binary=False):
     if cap in entries:
         if not label:
             if isinstance(args, list):
@@ -276,7 +278,8 @@ def cmd_output(cap, args, label=None, filter=None):
                 label = ' '.join(a)
             else:
                 label = args
-        data[label] = {'cap': cap, 'cmd_args': args, 'filter': filter}
+        data[label] = {'cap': cap, 'cmd_args': args, 'filter': filter,
+                       'binary': binary}
 
 def file_output(cap, path_list, newest_first=False):
     """
@@ -320,6 +323,16 @@ def func_output(cap, label, func):
         t = str(func).split()
         data[label] = {'cap': cap, 'func': func}
 
+def log_output(cap, logs, newest_first=False):
+    global log_days
+    file_output(cap, logs)
+    file_output(cap,
+        ['%s.%d' % (f, n) for n in range(1, log_days+1) for f in logs], \
+        newest_first=newest_first)
+    file_output(cap,
+        ['%s.%d.gz' % (f, n) for n in range(1, log_days+1) for f in logs], \
+        newest_first=newest_first)
+
 def collect_data():
     process_lists = {}
 
@@ -329,7 +342,9 @@ def collect_data():
             v['output'] = StringIOmtime()
             if not process_lists.has_key(cap):
                 process_lists[cap] = []
-            process_lists[cap].append(ProcOutput(v['cmd_args'], caps[cap][MAX_TIME], v['output'], v['filter']))
+            process_lists[cap].append(
+                ProcOutput(v['cmd_args'], caps[cap][MAX_TIME], v['output'],
+                           v['filter'], v['binary']))
         elif v.has_key('filename') and v['filename'].startswith('/proc/'):
             # proc files must be read into memory
             try:
@@ -361,7 +376,7 @@ def collect_data():
 
 def main(argv=None):
     global ANSWER_YES_TO_ALL, SILENT_MODE
-    global entries, data, dbg, unlimited_data
+    global entries, data, dbg, unlimited_data, log_days
 
     # Filter flags
     only_ovs_info = False
@@ -375,9 +390,6 @@ def main(argv=None):
     output_file = None
     output_type = 'tar.gz'
     output_fd = -1
-
-    # Default value for the number of rotated logs.
-    log_days = 20
 
     if argv is None:
         argv = sys.argv
@@ -449,7 +461,7 @@ def main(argv=None):
             collect_all_info = False
 
         if k == '--log-days':
-            log_days = int(v) + 1
+            log_days = int(v)
 
     if len(params) != 1:
         print >>sys.stderr, "Invalid additional arguments", str(params)
@@ -580,18 +592,14 @@ exclude those logs from the archive.
     cmd_output(CAP_PROCESS_LIST, [PS, 'wwwaxf', '-eo', 'pid,tty,stat,time,nice,psr,pcpu,pmem,nwchan,wchan:25,args'], label='process-tree')
     func_output(CAP_PROCESS_LIST, 'fd_usage', fd_usage)
 
-    system_logs = (CAP_SYSTEM_LOGS, [ VAR_LOG_DIR + x for x in
+    system_logs = ([ VAR_LOG_DIR + x for x in
         ['crit.log', 'kern.log', 'daemon.log', 'user.log',
         'syslog', 'messages', 'secure', 'debug', 'dmesg', 'boot']])
-    ovs_logs = (CAP_OPENVSWITCH_LOGS, [ OPENVSWITCH_LOG_DIR + x for x in
+    ovs_logs = ([ OPENVSWITCH_LOG_DIR + x for x in
         ['ovs-vswitchd.log', 'ovsdb-server.log',
         'ovs-xapi-sync.log', 'ovs-monitor-ipsec.log']])
-    for cap, logs in [system_logs, ovs_logs]:
-        file_output(cap, logs)
-        file_output(cap,
-            ['%s.%d' % (f, n) for n in range(log_days) for f in logs])
-        file_output(cap,
-            ['%s.%d.gz' % (f, n) for n in range(log_days) for f in logs])
+    log_output(CAP_SYSTEM_LOGS, system_logs)
+    log_output(CAP_OPENVSWITCH_LOGS, ovs_logs)
 
     if not os.path.exists('/var/log/dmesg') and not os.path.exists('/var/log/boot'):
         cmd_output(CAP_SYSTEM_LOGS, [DMESG])
@@ -848,8 +856,12 @@ def load_plugins(just_capabilities=False, filter=None):
                     continue
                 if el.tagName == "files":
                     newest_first = getBoolAttr(el, 'newest_first')
-                    file_output(dir, getText(el.childNodes).split(),
-                                newest_first=newest_first)
+                    if el.getAttribute("type") == "logs":
+                        log_output(dir, getText(el.childNodes).split(),
+                                    newest_first=newest_first)
+                    else:
+                        file_output(dir, getText(el.childNodes).split(),
+                                    newest_first=newest_first)
                 elif el.tagName == "directory":
                     pattern = el.getAttribute("pattern")
                     if pattern == '': pattern = None
@@ -861,7 +873,8 @@ def load_plugins(just_capabilities=False, filter=None):
                 elif el.tagName == "command":
                     label = el.getAttribute("label")
                     if label == '': label = None
-                    cmd_output(dir, getText(el.childNodes), label)
+                    binary = getBoolAttr(el, 'binary')
+                    cmd_output(dir, getText(el.childNodes), label, binary=binary)
 
 def make_tar(subdir, suffix, output_fd, output_file):
     global SILENT_MODE, data
@@ -1099,7 +1112,7 @@ def disk_list():
 class ProcOutput:
     debug = False
 
-    def __init__(self, command, max_time, inst=None, filter=None):
+    def __init__(self, command, max_time, inst=None, filter=None, binary=False):
         self.command = command
         self.max_time = max_time
         self.inst = inst
@@ -1110,6 +1123,10 @@ class ProcOutput:
         self.timeout = int(time.time()) + self.max_time
         self.filter = filter
         self.filter_state = {}
+        if binary:
+            self.bufsize = 1048576  # 1MB buffer
+        else:
+            self.bufsize = 1        # line buffered
 
     def __del__(self):
         self.terminate()
@@ -1122,7 +1139,9 @@ class ProcOutput:
         try:
             if ProcOutput.debug:
                 output_ts("Starting '%s'" % self.cmdAsStr())
-            self.proc = Popen(self.command, bufsize=1, stdin=dev_null, stdout=PIPE, stderr=dev_null, shell=isinstance(self.command, str))
+            self.proc = Popen(self.command, bufsize=self.bufsize,
+                              stdin=dev_null, stdout=PIPE, stderr=dev_null,
+                              shell=isinstance(self.command, str))
             old = fcntl.fcntl(self.proc.stdout.fileno(), fcntl.F_GETFD)
             fcntl.fcntl(self.proc.stdout.fileno(), fcntl.F_SETFD, old | fcntl.FD_CLOEXEC)
             self.running = True
@@ -1145,7 +1164,10 @@ class ProcOutput:
 
     def read_line(self):
         assert self.running
-        line = self.proc.stdout.readline()
+        if self.bufsize == 1:
+            line = self.proc.stdout.readline()
+        else:
+            line = self.proc.stdout.read(self.bufsize)
         if line == '':
             # process exited
             self.proc.stdout.close()
