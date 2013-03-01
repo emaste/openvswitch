@@ -341,11 +341,6 @@ struct subfacet {
     struct list list_node;      /* In struct facet's 'facets' list. */
     struct facet *facet;        /* Owning facet. */
 
-    /* Key.
-     *
-     * To save memory in the common case, 'key' is NULL if 'key_fitness' is
-     * ODP_FIT_PERFECT, that is, odp_flow_key_from_flow() can accurately
-     * regenerate the ODP flow key from ->facet->flow. */
     enum odp_key_fitness key_fitness;
     struct nlattr *key;
     int key_len;
@@ -384,14 +379,11 @@ static struct subfacet *subfacet_create(struct facet *, struct flow_miss *miss,
                                         long long int now);
 static struct subfacet *subfacet_find(struct ofproto_dpif *,
                                       const struct nlattr *key, size_t key_len,
-                                      uint32_t key_hash,
-                                      const struct flow *flow);
+                                      uint32_t key_hash);
 static void subfacet_destroy(struct subfacet *);
 static void subfacet_destroy__(struct subfacet *);
 static void subfacet_destroy_batch(struct ofproto_dpif *,
                                    struct subfacet **, int n);
-static void subfacet_get_key(struct subfacet *, struct odputil_keybuf *,
-                             struct ofpbuf *key);
 static void subfacet_reset_dp_stats(struct subfacet *,
                                     struct dpif_flow_stats *);
 static void subfacet_update_time(struct subfacet *, long long int used);
@@ -920,13 +912,13 @@ type_run(const char *type)
         backer->need_revalidate = 0;
 
         HMAP_FOR_EACH (ofproto, all_ofproto_dpifs_node, &all_ofproto_dpifs) {
-            struct facet *facet;
+            struct facet *facet, *next;
 
             if (ofproto->backer != backer) {
                 continue;
             }
 
-            HMAP_FOR_EACH (facet, hmap_node, &ofproto->facets) {
+            HMAP_FOR_EACH_SAFE (facet, next, hmap_node, &ofproto->facets) {
                 if (need_revalidate
                     || tag_set_intersects(&revalidate_set, facet->tags)) {
                     facet_revalidate(facet);
@@ -3296,7 +3288,6 @@ struct flow_miss {
 
 struct flow_miss_op {
     struct dpif_op dpif_op;
-    struct subfacet *subfacet;  /* Subfacet  */
     void *garbage;              /* Pointer to pass to free(), NULL if none. */
     uint64_t stub[1024 / 8];    /* Temporary buffer. */
 };
@@ -3386,7 +3377,6 @@ init_flow_miss_execute_op(struct flow_miss *miss, struct ofpbuf *packet,
         eth_pop_vlan(packet);
     }
 
-    op->subfacet = NULL;
     op->garbage = NULL;
     op->dpif_op.type = DPIF_OP_EXECUTE;
     op->dpif_op.u.execute.key = miss->key;
@@ -3530,7 +3520,6 @@ handle_flow_miss_with_facet(struct flow_miss *miss, struct facet *facet,
             struct dpif_execute *execute = &op->dpif_op.u.execute;
 
             init_flow_miss_execute_op(miss, packet, op);
-            op->subfacet = subfacet;
             if (!subfacet->slow) {
                 execute->actions = subfacet->actions;
                 execute->actions_len = subfacet->actions_len;
@@ -3552,7 +3541,8 @@ handle_flow_miss_with_facet(struct flow_miss *miss, struct facet *facet,
         struct flow_miss_op *op = &ops[(*n_ops)++];
         struct dpif_flow_put *put = &op->dpif_op.u.flow_put;
 
-        op->subfacet = subfacet;
+        subfacet->path = want_path;
+
         op->garbage = NULL;
         op->dpif_op.type = DPIF_OP_FLOW_PUT;
         put->flags = DPIF_FP_CREATE | DPIF_FP_MODIFY;
@@ -3858,25 +3848,9 @@ handle_miss_upcalls(struct dpif_backer *backer, struct dpif_upcall *upcalls,
     }
     dpif_operate(backer->dpif, dpif_ops, n_ops);
 
-    /* Free memory and update facets. */
+    /* Free memory. */
     for (i = 0; i < n_ops; i++) {
-        struct flow_miss_op *op = &flow_miss_ops[i];
-
-        switch (op->dpif_op.type) {
-        case DPIF_OP_EXECUTE:
-            break;
-
-        case DPIF_OP_FLOW_PUT:
-            if (!op->dpif_op.error) {
-                op->subfacet->path = subfacet_want_path(op->subfacet->slow);
-            }
-            break;
-
-        case DPIF_OP_FLOW_DEL:
-            NOT_REACHED();
-        }
-
-        free(op->garbage);
+        free(flow_miss_ops[i].garbage);
     }
     hmap_destroy(&todo);
 }
@@ -4153,7 +4127,7 @@ update_stats(struct dpif_backer *backer)
         }
 
         key_hash = odp_flow_key_hash(key, key_len);
-        subfacet = subfacet_find(ofproto, key, key_len, key_hash, &flow);
+        subfacet = subfacet_find(ofproto, key, key_len, key_hash);
         switch (subfacet ? subfacet->path : SF_NOT_INSTALLED) {
         case SF_FAST_PATH:
             update_subfacet_stats(subfacet, stats);
@@ -4608,6 +4582,9 @@ facet_lookup_valid(struct ofproto_dpif *ofproto, const struct flow *flow,
             || tag_set_intersects(&ofproto->backer->revalidate_set,
                                   facet->tags))) {
         facet_revalidate(facet);
+
+        /* facet_revalidate() may have destroyed 'facet'. */
+        facet = facet_find(ofproto, flow, hash);
     }
 
     return facet;
@@ -4693,9 +4670,7 @@ facet_check_consistency(struct facet *facet)
     ofpbuf_use_stub(&odp_actions, odp_actions_stub, sizeof odp_actions_stub);
     LIST_FOR_EACH (subfacet, list_node, &facet->subfacets) {
         enum subfacet_path want_path;
-        struct odputil_keybuf keybuf;
         struct action_xlate_ctx ctx;
-        struct ofpbuf key;
         struct ds s;
 
         action_xlate_ctx_init(&ctx, ofproto, &facet->flow,
@@ -4731,8 +4706,7 @@ facet_check_consistency(struct facet *facet)
         }
 
         ds_init(&s);
-        subfacet_get_key(subfacet, &keybuf, &key);
-        odp_flow_key_format(key.data, key.size, &s);
+        odp_flow_key_format(subfacet->key, subfacet->key_len, &s);
 
         ds_put_cstr(&s, ": inconsistency in subfacet");
         if (want_path != subfacet->path) {
@@ -4770,7 +4744,10 @@ facet_check_consistency(struct facet *facet)
  *     'facet' to the new rule and recompiles its actions.
  *
  *   - If the rule found is the same as 'facet''s current rule, leaves 'facet'
- *     where it is and recompiles its actions anyway. */
+ *     where it is and recompiles its actions anyway.
+ *
+ *   - If any of 'facet''s subfacets correspond to a new flow according to
+ *     ofproto_receive(), 'facet' is removed. */
 static void
 facet_revalidate(struct facet *facet)
 {
@@ -4790,6 +4767,25 @@ facet_revalidate(struct facet *facet)
     int i;
 
     COVERAGE_INC(facet_revalidate);
+
+    /* Check that child subfacets still correspond to this facet.  Tunnel
+     * configuration changes could cause a subfacet's OpenFlow in_port to
+     * change. */
+    LIST_FOR_EACH (subfacet, list_node, &facet->subfacets) {
+        struct ofproto_dpif *recv_ofproto;
+        struct flow recv_flow;
+        int error;
+
+        error = ofproto_receive(ofproto->backer, NULL, subfacet->key,
+                                subfacet->key_len, &recv_flow, NULL,
+                                &recv_ofproto, NULL, NULL);
+        if (error
+            || recv_ofproto != ofproto
+            || memcmp(&recv_flow, &facet->flow, sizeof recv_flow)) {
+            facet_remove(facet);
+            return;
+        }
+    }
 
     new_rule = rule_dpif_lookup(ofproto, &facet->flow);
 
@@ -4948,17 +4944,14 @@ flow_push_stats(struct rule_dpif *rule,
 
 static struct subfacet *
 subfacet_find(struct ofproto_dpif *ofproto,
-              const struct nlattr *key, size_t key_len, uint32_t key_hash,
-              const struct flow *flow)
+              const struct nlattr *key, size_t key_len, uint32_t key_hash)
 {
     struct subfacet *subfacet;
 
     HMAP_FOR_EACH_WITH_HASH (subfacet, hmap_node, key_hash,
                              &ofproto->subfacets) {
-        if (subfacet->key
-            ? (subfacet->key_len == key_len
-               && !memcmp(key, subfacet->key, key_len))
-            : flow_equal(flow, &subfacet->facet->flow)) {
+        if (subfacet->key_len == key_len
+            && !memcmp(key, subfacet->key, key_len)) {
             return subfacet;
         }
     }
@@ -4990,8 +4983,7 @@ subfacet_create(struct facet *facet, struct flow_miss *miss,
     if (list_is_empty(&facet->subfacets)) {
         subfacet = &facet->one_subfacet;
     } else {
-        subfacet = subfacet_find(ofproto, key, key_len, key_hash,
-                                 &facet->flow);
+        subfacet = subfacet_find(ofproto, key, key_len, key_hash);
         if (subfacet) {
             if (subfacet->facet == facet) {
                 return subfacet;
@@ -5009,13 +5001,8 @@ subfacet_create(struct facet *facet, struct flow_miss *miss,
     list_push_back(&facet->subfacets, &subfacet->list_node);
     subfacet->facet = facet;
     subfacet->key_fitness = key_fitness;
-    if (key_fitness != ODP_FIT_PERFECT) {
-        subfacet->key = xmemdup(key, key_len);
-        subfacet->key_len = key_len;
-    } else {
-        subfacet->key = NULL;
-        subfacet->key_len = 0;
-    }
+    subfacet->key = xmemdup(key, key_len);
+    subfacet->key_len = key_len;
     subfacet->used = now;
     subfacet->dp_packet_count = 0;
     subfacet->dp_byte_count = 0;
@@ -5068,18 +5055,15 @@ static void
 subfacet_destroy_batch(struct ofproto_dpif *ofproto,
                        struct subfacet **subfacets, int n)
 {
-    struct odputil_keybuf keybufs[SUBFACET_DESTROY_MAX_BATCH];
     struct dpif_op ops[SUBFACET_DESTROY_MAX_BATCH];
     struct dpif_op *opsp[SUBFACET_DESTROY_MAX_BATCH];
-    struct ofpbuf keys[SUBFACET_DESTROY_MAX_BATCH];
     struct dpif_flow_stats stats[SUBFACET_DESTROY_MAX_BATCH];
     int i;
 
     for (i = 0; i < n; i++) {
         ops[i].type = DPIF_OP_FLOW_DEL;
-        subfacet_get_key(subfacets[i], &keybufs[i], &keys[i]);
-        ops[i].u.flow_del.key = keys[i].data;
-        ops[i].u.flow_del.key_len = keys[i].size;
+        ops[i].u.flow_del.key = subfacets[i]->key;
+        ops[i].u.flow_del.key_len = subfacets[i]->key_len;
         ops[i].u.flow_del.stats = &stats[i];
         opsp[i] = &ops[i];
     }
@@ -5089,24 +5073,6 @@ subfacet_destroy_batch(struct ofproto_dpif *ofproto,
         subfacet_reset_dp_stats(subfacets[i], &stats[i]);
         subfacets[i]->path = SF_NOT_INSTALLED;
         subfacet_destroy(subfacets[i]);
-    }
-}
-
-/* Initializes 'key' with the sequence of OVS_KEY_ATTR_* Netlink attributes
- * that can be used to refer to 'subfacet'.  The caller must provide 'keybuf'
- * for use as temporary storage. */
-static void
-subfacet_get_key(struct subfacet *subfacet, struct odputil_keybuf *keybuf,
-                 struct ofpbuf *key)
-{
-
-    if (!subfacet->key) {
-        struct flow *flow = &subfacet->facet->flow;
-
-        ofpbuf_use_stack(key, keybuf, sizeof *keybuf);
-        odp_flow_key_from_flow(key, flow, subfacet->odp_in_port);
-    } else {
-        ofpbuf_use_const(key, subfacet->key, subfacet->key_len);
     }
 }
 
@@ -5158,9 +5124,7 @@ subfacet_install(struct subfacet *subfacet,
     struct ofproto_dpif *ofproto = ofproto_dpif_cast(facet->rule->up.ofproto);
     enum subfacet_path path = subfacet_want_path(slow);
     uint64_t slow_path_stub[128 / 8];
-    struct odputil_keybuf keybuf;
     enum dpif_flow_put_flags flags;
-    struct ofpbuf key;
     int ret;
 
     flags = DPIF_FP_CREATE | DPIF_FP_MODIFY;
@@ -5174,9 +5138,8 @@ subfacet_install(struct subfacet *subfacet,
                           &actions, &actions_len);
     }
 
-    subfacet_get_key(subfacet, &keybuf, &key);
-    ret = dpif_flow_put(ofproto->backer->dpif, flags, key.data, key.size,
-                        actions, actions_len, stats);
+    ret = dpif_flow_put(ofproto->backer->dpif, flags, subfacet->key,
+                        subfacet->key_len, actions, actions_len, stats);
 
     if (stats) {
         subfacet_reset_dp_stats(subfacet, stats);
@@ -5202,14 +5165,11 @@ subfacet_uninstall(struct subfacet *subfacet)
     if (subfacet->path != SF_NOT_INSTALLED) {
         struct rule_dpif *rule = subfacet->facet->rule;
         struct ofproto_dpif *ofproto = ofproto_dpif_cast(rule->up.ofproto);
-        struct odputil_keybuf keybuf;
         struct dpif_flow_stats stats;
-        struct ofpbuf key;
         int error;
 
-        subfacet_get_key(subfacet, &keybuf, &key);
-        error = dpif_flow_del(ofproto->backer->dpif,
-                              key.data, key.size, &stats);
+        error = dpif_flow_del(ofproto->backer->dpif, subfacet->key,
+                              subfacet->key_len, &stats);
         subfacet_reset_dp_stats(subfacet, &stats);
         if (!error) {
             subfacet_update_stats(subfacet, &stats);
@@ -8064,11 +8024,7 @@ ofproto_unixctl_dpif_dump_flows(struct unixctl_conn *conn,
     update_stats(ofproto->backer);
 
     HMAP_FOR_EACH (subfacet, hmap_node, &ofproto->subfacets) {
-        struct odputil_keybuf keybuf;
-        struct ofpbuf key;
-
-        subfacet_get_key(subfacet, &keybuf, &key);
-        odp_flow_key_format(key.data, key.size, &ds);
+        odp_flow_key_format(subfacet->key, subfacet->key_len, &ds);
 
         ds_put_format(&ds, ", packets:%"PRIu64", bytes:%"PRIu64", used:",
                       subfacet->dp_packet_count, subfacet->dp_byte_count);
