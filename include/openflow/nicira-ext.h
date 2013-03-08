@@ -116,12 +116,14 @@ enum nx_hash_fields {
 /* This command enables or disables an Open vSwitch extension that allows a
  * controller to specify the OpenFlow table to which a flow should be added,
  * instead of having the switch decide which table is most appropriate as
- * required by OpenFlow 1.0.  By default, the extension is disabled.
+ * required by OpenFlow 1.0.  Because NXM was designed as an extension to
+ * OpenFlow 1.0, the extension applies equally to ofp10_flow_mod and
+ * nx_flow_mod.  By default, the extension is disabled.
  *
  * When this feature is enabled, Open vSwitch treats struct ofp10_flow_mod's
- * 16-bit 'command' member as two separate fields.  The upper 8 bits are used
- * as the table ID, the lower 8 bits specify the command as usual.  A table ID
- * of 0xff is treated like a wildcarded table ID.
+ * and struct nx_flow_mod's 16-bit 'command' member as two separate fields.
+ * The upper 8 bits are used as the table ID, the lower 8 bits specify the
+ * command as usual.  A table ID of 0xff is treated like a wildcarded table ID.
  *
  * The specific treatment of the table ID depends on the type of flow mod:
  *
@@ -306,6 +308,10 @@ enum nx_action_subtype {
     NXAST_WRITE_METADATA,       /* struct nx_action_write_metadata */
     NXAST_PUSH_MPLS,            /* struct nx_action_push_mpls */
     NXAST_POP_MPLS,             /* struct nx_action_pop_mpls */
+    NXAST_SET_MPLS_TTL,         /* struct nx_action_ttl */
+    NXAST_DEC_MPLS_TTL,         /* struct nx_action_header */
+    NXAST_STACK_PUSH,           /* struct nx_action_stack */
+    NXAST_STACK_POP,            /* struct nx_action_stack */
 };
 
 /* Header for Nicira-defined actions. */
@@ -559,6 +565,23 @@ struct nx_action_reg_load {
     ovs_be64 value;                 /* Immediate value. */
 };
 OFP_ASSERT(sizeof(struct nx_action_reg_load) == 24);
+
+/* Action structure for NXAST_STACK_PUSH and NXAST_STACK_POP.
+ *
+ * Pushes (or pops) field[offset: offset + n_bits] to (or from)
+ * top of the stack.
+ */
+struct nx_action_stack {
+    ovs_be16 type;                  /* OFPAT_VENDOR. */
+    ovs_be16 len;                   /* Length is 16. */
+    ovs_be32 vendor;                /* NX_VENDOR_ID. */
+    ovs_be16 subtype;               /* NXAST_REG_PUSH or NXAST_REG_POP. */
+    ovs_be16 offset;                /* Bit offset into the field. */
+    ovs_be32 field;                 /* The field used for push or pop. */
+    ovs_be16 n_bits;                /* (n_bits + 1) bits of the field. */
+    uint8_t zero[6];                /* Reserved, must be zero. */
+};
+OFP_ASSERT(sizeof(struct nx_action_stack) == 24);
 
 /* Action structure for NXAST_NOTE.
  *
@@ -1745,7 +1768,8 @@ OFP_ASSERT(sizeof(struct nx_set_flow_format) == 4);
  */
 struct nx_flow_mod {
     ovs_be64 cookie;              /* Opaque controller-issued identifier. */
-    ovs_be16 command;             /* One of OFPFC_*. */
+    ovs_be16 command;             /* OFPFC_* + possibly a table ID (see comment
+                                   * on struct nx_flow_mod_table_id). */
     ovs_be16 idle_timeout;        /* Idle time before discarding (seconds). */
     ovs_be16 hard_timeout;        /* Max time before discarding (seconds). */
     ovs_be16 priority;            /* Priority level of flow entry. */
@@ -1768,12 +1792,18 @@ struct nx_flow_mod {
 };
 OFP_ASSERT(sizeof(struct nx_flow_mod) == 32);
 
-/* NXT_FLOW_REMOVED (analogous to OFPT_FLOW_REMOVED). */
+/* NXT_FLOW_REMOVED (analogous to OFPT_FLOW_REMOVED).
+ *
+ * 'table_id' is present only in Open vSwitch 1.11 and later.  In earlier
+ * versions of Open vSwitch, this is a padding byte that is always zeroed.
+ * Therefore, a 'table_id' value of 0 indicates that the table ID is not known,
+ * and other values may be interpreted as one more than the flow's former table
+ * ID. */
 struct nx_flow_removed {
     ovs_be64 cookie;          /* Opaque controller-issued identifier. */
     ovs_be16 priority;        /* Priority level of flow entry. */
     uint8_t reason;           /* One of OFPRR_*. */
-    uint8_t pad[1];           /* Align to 32-bits. */
+    uint8_t table_id;         /* Flow's former table ID, plus one. */
     ovs_be32 duration_sec;    /* Time flow was alive in seconds. */
     ovs_be32 duration_nsec;   /* Time flow was alive in nanoseconds beyond
                                  duration_sec. */
@@ -2191,5 +2221,16 @@ struct nx_action_pop_mpls {
     uint8_t  pad[4];
 };
 OFP_ASSERT(sizeof(struct nx_action_pop_mpls) == 16);
+
+/* Action structure for NXAST_SET_MPLS_TTL. */
+struct nx_action_mpls_ttl {
+    ovs_be16 type;                  /* OFPAT_VENDOR. */
+    ovs_be16 len;                   /* Length is 8. */
+    ovs_be32 vendor;                /* NX_VENDOR_ID. */
+    ovs_be16 subtype;               /* NXAST_SET_MPLS_TTL. */
+    uint8_t  ttl;                   /* TTL */
+    uint8_t  pad[5];
+};
+OFP_ASSERT(sizeof(struct nx_action_mpls_ttl) == 16);
 
 #endif /* openflow/nicira-ext.h */

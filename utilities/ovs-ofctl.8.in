@@ -1018,6 +1018,19 @@ invalid ttl packets.  If controller ids are not specified, the
 ``packet_in'' message will be sent only to the controllers having
 controller id zero which have registered for the invalid ttl packets.
 .
+.IP \fBset_mpls_ttl\fR:\fIttl\fR
+Set the TTL of the outer MPLS label stack entry of a packet.
+\fIttl\fR should be in the range 0 to 255 inclusive.
+.
+.IP \fBdec_mpls_ttl\fR
+Decrement TTL of the outer MPLS label stack entry of a packet.  If the TTL
+is initially zero, no decrement occurs.  Instead, a ``packet-in'' message
+with reason code \fBOFPR_INVALID_TTL\fR is sent to each connected
+controller with controller id zer that has enabled receiving them.
+Processing the current set of actions then stops.  However, if the current
+set of actions was reached through ``resubmit'' then remaining actions in
+outer levels resume processing.
+.
 .IP \fBnote:\fR[\fIhh\fR]...
 Does nothing at all.  Any number of bytes represented as hex digits
 \fIhh\fR may be included.  Pairs of hex digits may be separated by
@@ -1049,6 +1062,23 @@ in field \fIdst\fR.
 .IP
 Example: \fBload:55\->NXM_NX_REG2[0..5]\fR loads value 55 (bit pattern
 \fB110111\fR) into bits 0 through 5, inclusive, in register 2.
+.
+.IP "\fBpush:\fIsrc\fB[\fIstart\fB..\fIend\fB]"
+Pushes \fIstart\fR to \fIend\fR bits inclusive, in fields
+on top of the stack.
+.IP
+Example: \fBpush:NXM_NX_REG2[0..5]\fR push the value stored in register
+2 bits 0 through 5, inclusive, on to the internal stack.
+.
+.IP "\fBpop:\fIdst\fB[\fIstart\fB..\fIend\fB]"
+Pops from the top of the stack, retrieves the \fIstart\fR to \fIend\fR bits
+inclusive, from the value popped and store them into the corresponding
+bits in \fIdst\fR.
+.
+.IP
+Example: \fBpop:NXM_NX_REG2[0..5]\fR pops the value from top of the stack.
+Set register 2 bits 0 through 5, inclusive, based on bits 0 through 5 from the
+value just popped.
 .
 .IP "\fBset_field:\fIvalue\fB\->\fIdst"
 Writes the literal \fIvalue\fR into the field \fIdst\fR, which should

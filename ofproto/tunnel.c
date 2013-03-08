@@ -32,10 +32,7 @@
 
 /* XXX:
  *
- * Ability to generate actions on input for ECN
  * Ability to generate metadata for packet-outs
- * VXLAN.
- * Multicast group management (possibly).
  * Disallow netdevs with names like "gre64_system" to prevent collisions. */
 
 VLOG_DEFINE_THIS_MODULE(tunnel);
@@ -199,14 +196,6 @@ tnl_port_receive(struct flow *flow)
         return NULL;
     }
 
-    if (is_ip_any(flow)
-        && ((flow->tunnel.ip_tos & IP_ECN_MASK) == IP_ECN_CE)
-        && (flow->nw_tos & IP_ECN_MASK) == IP_ECN_NOT_ECT) {
-        VLOG_WARN_RL(&rl, "dropping tunnel packet marked ECN CE but is not ECN"
-                     " capable");
-        return NULL;
-    }
-
     if (!VLOG_DROP_DBG(&dbg_rl)) {
         pre_flow_str = flow_to_string(flow);
     }
@@ -322,15 +311,12 @@ static struct tnl_port *
 tnl_find(struct tnl_match *match_)
 {
     struct tnl_match match = *match_;
-    bool is_multicast = ip_is_multicast(match.ip_src);
     struct tnl_port *tnl_port;
 
     /* remote_ip, local_ip, in_key */
-    if (!is_multicast) {
-        tnl_port = tnl_find_exact(&match);
-        if (tnl_port) {
-            return tnl_port;
-        }
+    tnl_port = tnl_find_exact(&match);
+    if (tnl_port) {
+        return tnl_port;
     }
 
     /* remote_ip, in_key */
@@ -342,47 +328,20 @@ tnl_find(struct tnl_match *match_)
     match.ip_src = match_->ip_src;
 
     /* remote_ip, local_ip */
-    if (!is_multicast) {
-        match.in_key = 0;
-        match.in_key_flow = true;
-        tnl_port = tnl_find_exact(&match);
-        if (tnl_port) {
-            return tnl_port;
-        }
-        match.in_key = match_->in_key;
-        match.in_key_flow = false;
-    }
-
-    /* remote_ip */
-    match.ip_src = 0;
     match.in_key = 0;
     match.in_key_flow = true;
     tnl_port = tnl_find_exact(&match);
     if (tnl_port) {
         return tnl_port;
     }
-    match.ip_src = match_->ip_src;
-    match.in_key = match_->in_key;
-    match.in_key_flow = false;
 
-    if (is_multicast) {
-        match.ip_src = 0;
-        match.ip_dst = match_->ip_src;
-
-        /* multicast remote_ip, in_key */
-        tnl_port = tnl_find_exact(&match);
-        if (tnl_port) {
-            return tnl_port;
-        }
-
-        /* multicast remote_ip */
-        match.in_key = 0;
-        match.in_key_flow = true;
-        tnl_port = tnl_find_exact(&match);
-        if (tnl_port) {
-            return tnl_port;
-        }
+    /* remote_ip */
+    match.ip_src = 0;
+    tnl_port = tnl_find_exact(&match);
+    if (tnl_port) {
+        return tnl_port;
     }
+
     return NULL;
 }
 

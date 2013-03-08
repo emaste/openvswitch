@@ -339,6 +339,16 @@ ofpact_from_nxast(const union ofp_action *a, enum ofputil_action_code code,
             (const struct nx_action_reg_load *) a, out);
         break;
 
+    case OFPUTIL_NXAST_STACK_PUSH:
+        error = nxm_stack_push_from_openflow(
+            (const struct nx_action_stack *) a, out);
+        break;
+
+    case OFPUTIL_NXAST_STACK_POP:
+        error = nxm_stack_pop_from_openflow(
+            (const struct nx_action_stack *) a, out);
+        break;
+
     case OFPUTIL_NXAST_NOTE:
         nan = (const struct nx_action_note *) a;
         note_from_openflow(nan, out);
@@ -405,6 +415,16 @@ ofpact_from_nxast(const union ofp_action *a, enum ofputil_action_code code,
         ofpact_put_PUSH_MPLS(out)->ethertype = nxapm->ethertype;
         break;
     }
+
+    case OFPUTIL_NXAST_SET_MPLS_TTL: {
+        struct nx_action_mpls_ttl *nxamt = (struct nx_action_mpls_ttl *)a;
+        ofpact_put_SET_MPLS_TTL(out)->ttl = nxamt->ttl;
+        break;
+    }
+
+    case OFPUTIL_NXAST_DEC_MPLS_TTL:
+        ofpact_put_DEC_MPLS_TTL(out);
+        break;
 
     case OFPUTIL_NXAST_POP_MPLS: {
         struct nx_action_pop_mpls *nxapm = (struct nx_action_pop_mpls *)a;
@@ -786,6 +806,16 @@ ofpact_from_openflow11(const union ofp_action *a, struct ofpbuf *out)
         return nxm_reg_load_from_openflow12_set_field(
             (const struct ofp12_action_set_field *)a, out);
 
+    case OFPUTIL_OFPAT11_SET_MPLS_TTL: {
+        struct ofp11_action_mpls_ttl *oamt = (struct ofp11_action_mpls_ttl *)a;
+        ofpact_put_SET_MPLS_TTL(out)->ttl = oamt->mpls_ttl;
+        break;
+    }
+
+    case OFPUTIL_OFPAT11_DEC_MPLS_TTL:
+        ofpact_put_DEC_MPLS_TTL(out);
+        break;
+
     case OFPUTIL_OFPAT11_PUSH_MPLS: {
         struct ofp11_action_push *oap = (struct ofp11_action_push *)a;
         if (!eth_type_mpls(oap->ethertype)) {
@@ -1135,7 +1165,15 @@ ofpact_check__(const struct ofpact *a, const struct flow *flow, int max_ports,
             return nxm_reg_load_check(ofpact_get_REG_LOAD(a), flow);
         }
 
+    case OFPACT_STACK_PUSH:
+        return nxm_stack_push_check(ofpact_get_STACK_PUSH(a), flow);
+
+    case OFPACT_STACK_POP:
+        return nxm_stack_pop_check(ofpact_get_STACK_POP(a), flow);
+
     case OFPACT_DEC_TTL:
+    case OFPACT_SET_MPLS_TTL:
+    case OFPACT_DEC_MPLS_TTL:
     case OFPACT_SET_TUNNEL:
     case OFPACT_SET_QUEUE:
     case OFPACT_POP_QUEUE:
@@ -1379,8 +1417,25 @@ ofpact_to_nxast(const struct ofpact *a, struct ofpbuf *out)
         nxm_reg_load_to_nxast(ofpact_get_REG_LOAD(a), out);
         break;
 
+    case OFPACT_STACK_PUSH:
+        nxm_stack_push_to_nxast(ofpact_get_STACK_PUSH(a), out);
+        break;
+
+    case OFPACT_STACK_POP:
+        nxm_stack_pop_to_nxast(ofpact_get_STACK_POP(a), out);
+        break;
+
     case OFPACT_DEC_TTL:
         ofpact_dec_ttl_to_nxast(ofpact_get_DEC_TTL(a), out);
+        break;
+
+    case OFPACT_SET_MPLS_TTL:
+        ofputil_put_NXAST_SET_MPLS_TTL(out)->ttl
+            = ofpact_get_SET_MPLS_TTL(a)->ttl;
+        break;
+
+    case OFPACT_DEC_MPLS_TTL:
+        ofputil_put_NXAST_DEC_MPLS_TTL(out);
         break;
 
     case OFPACT_SET_TUNNEL:
@@ -1549,7 +1604,11 @@ ofpact_to_openflow10(const struct ofpact *a, struct ofpbuf *out)
     case OFPACT_BUNDLE:
     case OFPACT_REG_MOVE:
     case OFPACT_REG_LOAD:
+    case OFPACT_STACK_PUSH:
+    case OFPACT_STACK_POP:
     case OFPACT_DEC_TTL:
+    case OFPACT_SET_MPLS_TTL:
+    case OFPACT_DEC_MPLS_TTL:
     case OFPACT_SET_TUNNEL:
     case OFPACT_WRITE_METADATA:
     case OFPACT_SET_QUEUE:
@@ -1682,6 +1741,15 @@ ofpact_to_openflow11(const struct ofpact *a, struct ofpbuf *out)
         ofpact_dec_ttl_to_openflow11(ofpact_get_DEC_TTL(a), out);
         break;
 
+    case OFPACT_SET_MPLS_TTL:
+        ofputil_put_OFPAT11_SET_MPLS_TTL(out)->mpls_ttl
+            = ofpact_get_SET_MPLS_TTL(a)->ttl;
+        break;
+
+    case OFPACT_DEC_MPLS_TTL:
+        ofputil_put_OFPAT11_DEC_MPLS_TTL(out);
+        break;
+
     case OFPACT_WRITE_METADATA:
         /* OpenFlow 1.1 uses OFPIT_WRITE_METADATA to express this action. */
         break;
@@ -1706,6 +1774,8 @@ ofpact_to_openflow11(const struct ofpact *a, struct ofpbuf *out)
     case OFPACT_BUNDLE:
     case OFPACT_REG_MOVE:
     case OFPACT_REG_LOAD:
+    case OFPACT_STACK_PUSH:
+    case OFPACT_STACK_POP:
     case OFPACT_SET_TUNNEL:
     case OFPACT_POP_QUEUE:
     case OFPACT_FIN_TIMEOUT:
@@ -1825,7 +1895,11 @@ ofpact_outputs_to_port(const struct ofpact *ofpact, uint16_t port)
     case OFPACT_SET_L4_DST_PORT:
     case OFPACT_REG_MOVE:
     case OFPACT_REG_LOAD:
+    case OFPACT_STACK_PUSH:
+    case OFPACT_STACK_POP:
     case OFPACT_DEC_TTL:
+    case OFPACT_SET_MPLS_TTL:
+    case OFPACT_DEC_MPLS_TTL:
     case OFPACT_SET_TUNNEL:
     case OFPACT_WRITE_METADATA:
     case OFPACT_SET_QUEUE:
@@ -2044,8 +2118,25 @@ ofpact_format(const struct ofpact *a, struct ds *s)
         nxm_format_reg_load(ofpact_get_REG_LOAD(a), s);
         break;
 
+    case OFPACT_STACK_PUSH:
+        nxm_format_stack_push(ofpact_get_STACK_PUSH(a), s);
+        break;
+
+    case OFPACT_STACK_POP:
+        nxm_format_stack_pop(ofpact_get_STACK_POP(a), s);
+        break;
+
     case OFPACT_DEC_TTL:
         print_dec_ttl(ofpact_get_DEC_TTL(a), s);
+        break;
+
+    case OFPACT_SET_MPLS_TTL:
+        ds_put_format(s, "set_mpls_ttl(%"PRIu8")",
+                      ofpact_get_SET_MPLS_TTL(a)->ttl);
+        break;
+
+    case OFPACT_DEC_MPLS_TTL:
+        ds_put_cstr(s, "dec_mpls_ttl");
         break;
 
     case OFPACT_SET_TUNNEL:
