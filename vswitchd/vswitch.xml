@@ -1131,6 +1131,10 @@
         on a host.
       </column>
 
+      <column name="mac_in_use">
+        The MAC address in use by this interface.
+      </column>
+
       <column name="mac">
         <p>Ethernet address to set for this interface.  If unset then the
         default MAC address is used:</p>
@@ -1287,22 +1291,12 @@
       </p>
 
       <column name="options" key="remote_ip">
-        <p>
-          Required.  The tunnel endpoint.  Unicast and multicast endpoints are
-          both supported.
-        </p>
-
-        <p>
-          When a multicast endpoint is specified, a routing table lookup occurs
-          only when the tunnel is created.  Following a routing change, delete
-          and then re-create the tunnel to force a new routing table lookup.
-        </p>
+          Required.  The tunnel endpoint.  Only unicast endpoints are supported.
       </column>
 
       <column name="options" key="local_ip">
         Optional.  The destination IP that received packets must match.
-        Default is to match all addresses.  Must be omitted when <ref
-        column="options" key="remote_ip"/> is a multicast address.
+        Default is to match all addresses.
       </column>
 
       <column name="options" key="in_key">
@@ -1956,6 +1950,11 @@
           two different hypervisors.  That is, <code>active</code> means that
           this <ref column="external_ids" key="iface-id"/> is the active
           instance within a single hypervisor, not in a broader scope.
+          There is one exception: some hypervisors support ``migration'' from a
+          given hypervisor to itself (most often for test purposes).  During
+          such a ``migration,'' two instances of a single <ref
+          column="external_ids" key="iface-id"/> might both be briefly marked
+          <code>active</code> on a single hypervisor.
         </p>
       </column>
 
