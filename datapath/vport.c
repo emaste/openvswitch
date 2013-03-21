@@ -139,9 +139,8 @@ struct vport *ovs_vport_locate(struct net *net, const char *name)
 {
 	struct hlist_head *bucket = hash_bucket(net, name);
 	struct vport *vport;
-	struct hlist_node *node;
 
-	hlist_for_each_entry_rcu(vport, node, bucket, hash_node)
+	hlist_for_each_entry_rcu(vport, bucket, hash_node)
 		if (!strcmp(name, vport->ops->get_name(vport)) &&
 		    net_eq(ovs_dp_get_net(vport->dp), net))
 			return vport;
@@ -415,9 +414,6 @@ void ovs_vport_receive(struct vport *vport, struct sk_buff *skb)
 	stats->rx_packets++;
 	stats->rx_bytes += skb->len;
 	u64_stats_update_end(&stats->sync);
-
-	if (!(vport->ops->flags & VPORT_F_FLOW))
-		OVS_CB(skb)->flow = NULL;
 
 	if (!(vport->ops->flags & VPORT_F_TUN_ID))
 		OVS_CB(skb)->tun_key = NULL;

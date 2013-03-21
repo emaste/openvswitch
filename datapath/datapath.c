@@ -158,11 +158,10 @@ static struct hlist_head *vport_hash_bucket(const struct datapath *dp,
 struct vport *ovs_lookup_vport(const struct datapath *dp, u16 port_no)
 {
 	struct vport *vport;
-	struct hlist_node *n;
 	struct hlist_head *head;
 
 	head = vport_hash_bucket(dp, port_no);
-	hlist_for_each_entry_rcu(vport, n, head, dp_hash_node) {
+	hlist_for_each_entry_rcu(vport, head, dp_hash_node) {
 		if (vport->port_no == port_no)
 			return vport;
 	}
@@ -202,40 +201,36 @@ void ovs_dp_process_received_packet(struct vport *p, struct sk_buff *skb)
 	struct datapath *dp = p->dp;
 	struct sw_flow *flow;
 	struct dp_stats_percpu *stats;
+	struct sw_flow_key key;
 	u64 *stats_counter;
 	int error;
+	int key_len;
 
 	stats = this_cpu_ptr(dp->stats_percpu);
 
-	if (!OVS_CB(skb)->flow) {
-		struct sw_flow_key key;
-		int key_len;
-
-		/* Extract flow from 'skb' into 'key'. */
-		error = ovs_flow_extract(skb, p->port_no, &key, &key_len);
-		if (unlikely(error)) {
-			kfree_skb(skb);
-			return;
-		}
-
-		/* Look up flow. */
-		flow = ovs_flow_tbl_lookup(rcu_dereference(dp->table),
-					   &key, key_len);
-		if (unlikely(!flow)) {
-			struct dp_upcall_info upcall;
-
-			upcall.cmd = OVS_PACKET_CMD_MISS;
-			upcall.key = &key;
-			upcall.userdata = NULL;
-			upcall.portid = p->upcall_portid;
-			ovs_dp_upcall(dp, skb, &upcall);
-			consume_skb(skb);
-			stats_counter = &stats->n_missed;
-			goto out;
-		}
-
-		OVS_CB(skb)->flow = flow;
+	/* Extract flow from 'skb' into 'key'. */
+	error = ovs_flow_extract(skb, p->port_no, &key, &key_len);
+	if (unlikely(error)) {
+		kfree_skb(skb);
+		return;
 	}
+
+	/* Look up flow. */
+	flow = ovs_flow_tbl_lookup(rcu_dereference(dp->table), &key, key_len);
+	if (unlikely(!flow)) {
+		struct dp_upcall_info upcall;
+
+		upcall.cmd = OVS_PACKET_CMD_MISS;
+		upcall.key = &key;
+		upcall.userdata = NULL;
+		upcall.portid = p->upcall_portid;
+		ovs_dp_upcall(dp, skb, &upcall);
+		consume_skb(skb);
+		stats_counter = &stats->n_missed;
+		goto out;
+	}
+
+	OVS_CB(skb)->flow = flow;
 
 	stats_counter = &stats->n_hit;
 	ovs_flow_used(OVS_CB(skb)->flow, skb);
@@ -1637,9 +1632,9 @@ static void __dp_destroy(struct datapath *dp)
 
 	for (i = 0; i < DP_VPORT_HASH_BUCKETS; i++) {
 		struct vport *vport;
-		struct hlist_node *node, *n;
+		struct hlist_node *n;
 
-		hlist_for_each_entry_safe(vport, node, n, &dp->ports[i], dp_hash_node)
+		hlist_for_each_entry_safe(vport, n, &dp->ports[i], dp_hash_node)
 			if (vport->port_no != OVSP_LOCAL)
 				ovs_dp_detach_port(vport);
 	}
@@ -2126,10 +2121,9 @@ static int ovs_vport_cmd_dump(struct sk_buff *skb, struct netlink_callback *cb)
 	rcu_read_lock();
 	for (i = bucket; i < DP_VPORT_HASH_BUCKETS; i++) {
 		struct vport *vport;
-		struct hlist_node *n;
 
 		j = 0;
-		hlist_for_each_entry_rcu(vport, n, &dp->ports[i], dp_hash_node) {
+		hlist_for_each_entry_rcu(vport, &dp->ports[i], dp_hash_node) {
 			if (j >= skip &&
 			    ovs_vport_cmd_fill_info(vport, skb,
 						    NETLINK_CB(cb->skb).portid,

@@ -5736,7 +5736,7 @@ compose_output_action__(struct action_xlate_ctx *ctx, uint16_t ofp_port,
 
     /* If 'struct flow' gets additional metadata, we'll need to zero it out
      * before traversing a patch port. */
-    BUILD_ASSERT_DECL(FLOW_WC_SEQ == 19);
+    BUILD_ASSERT_DECL(FLOW_WC_SEQ == 20);
 
     if (!ofport) {
         xlate_report(ctx, "Nonexistent output port");
@@ -5829,6 +5829,7 @@ compose_output_action__(struct action_xlate_ctx *ctx, uint16_t ofp_port,
         if (out_port != odp_port) {
             ctx->flow.vlan_tci = htons(0);
         }
+        ctx->flow.skb_mark &= ~IPSEC_MARK;
     }
     commit_odp_actions(&ctx->flow, &ctx->base_flow, ctx->odp_actions);
     nl_msg_put_u32(ctx->odp_actions, OVS_ACTION_ATTR_OUTPUT, out_port);
@@ -6065,7 +6066,6 @@ execute_mpls_push_action(struct action_xlate_ctx *ctx, ovs_be16 eth_type)
         tc = (ctx->flow.nw_tos & IP_DSCP_MASK) >> 2;
         ttl = ctx->flow.nw_ttl ? ctx->flow.nw_ttl : 0x40;
         ctx->flow.mpls_lse = set_mpls_lse_values(ttl, tc, 1, label);
-        ctx->flow.encap_dl_type = ctx->flow.dl_type;
         ctx->flow.mpls_depth = 1;
     }
     ctx->flow.dl_type = eth_type;
@@ -6082,7 +6082,6 @@ execute_mpls_pop_action(struct action_xlate_ctx *ctx, ovs_be16 eth_type)
         ctx->flow.mpls_lse = htonl(0);
         if (!ctx->flow.mpls_depth) {
             ctx->flow.dl_type = eth_type;
-            ctx->flow.encap_dl_type = htons(0);
         }
     }
 }
@@ -6451,11 +6450,15 @@ do_xlate_actions(const struct ofpact *ofpacts, size_t ofpacts_len,
             break;
 
         case OFPACT_SET_IPV4_SRC:
-            ctx->flow.nw_src = ofpact_get_SET_IPV4_SRC(a)->ipv4;
+            if (ctx->flow.dl_type == htons(ETH_TYPE_IP)) {
+                ctx->flow.nw_src = ofpact_get_SET_IPV4_SRC(a)->ipv4;
+            }
             break;
 
         case OFPACT_SET_IPV4_DST:
-            ctx->flow.nw_dst = ofpact_get_SET_IPV4_DST(a)->ipv4;
+            if (ctx->flow.dl_type == htons(ETH_TYPE_IP)) {
+                ctx->flow.nw_dst = ofpact_get_SET_IPV4_DST(a)->ipv4;
+            }
             break;
 
         case OFPACT_SET_IPV4_DSCP:
@@ -6467,11 +6470,15 @@ do_xlate_actions(const struct ofpact *ofpacts, size_t ofpacts_len,
             break;
 
         case OFPACT_SET_L4_SRC_PORT:
-            ctx->flow.tp_src = htons(ofpact_get_SET_L4_SRC_PORT(a)->port);
+            if (is_ip_any(&ctx->flow)) {
+                ctx->flow.tp_src = htons(ofpact_get_SET_L4_SRC_PORT(a)->port);
+            }
             break;
 
         case OFPACT_SET_L4_DST_PORT:
-            ctx->flow.tp_dst = htons(ofpact_get_SET_L4_DST_PORT(a)->port);
+            if (is_ip_any(&ctx->flow)) {
+                ctx->flow.tp_dst = htons(ofpact_get_SET_L4_DST_PORT(a)->port);
+            }
             break;
 
         case OFPACT_RESUBMIT:
