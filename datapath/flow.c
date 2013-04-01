@@ -482,7 +482,7 @@ static __be16 parse_ethertype(struct sk_buff *skb)
 	proto = *(__be16 *) skb->data;
 	__skb_pull(skb, sizeof(__be16));
 
-	if (ntohs(proto) >= 1536)
+	if (ntohs(proto) >= ETH_P_802_3_MIN)
 		return proto;
 
 	if (skb->len < sizeof(struct llc_snap_hdr))
@@ -499,7 +499,7 @@ static __be16 parse_ethertype(struct sk_buff *skb)
 
 	__skb_pull(skb, sizeof(struct llc_snap_hdr));
 
-	if (ntohs(llc->ethertype) >= 1536)
+	if (ntohs(llc->ethertype) >= ETH_P_802_3_MIN)
 		return llc->ethertype;
 
 	return htons(ETH_P_802_2);
@@ -825,9 +825,9 @@ void ovs_flow_tbl_insert(struct flow_table *table, struct sw_flow *flow,
 
 void ovs_flow_tbl_remove(struct flow_table *table, struct sw_flow *flow)
 {
+	BUG_ON(table->count == 0);
 	hlist_del_rcu(&flow->hash_node[table->node_ver]);
 	table->count--;
-	BUG_ON(table->count < 0);
 }
 
 /* The size of the argument for each %OVS_KEY_ATTR_* Netlink attribute.  */
@@ -1181,7 +1181,7 @@ int ovs_flow_from_nlattrs(struct sw_flow_key *swkey, int *key_lenp,
 
 	if (attrs & (1 << OVS_KEY_ATTR_ETHERTYPE)) {
 		swkey->eth.type = nla_get_be16(a[OVS_KEY_ATTR_ETHERTYPE]);
-		if (ntohs(swkey->eth.type) < 1536)
+		if (ntohs(swkey->eth.type) < ETH_P_802_3_MIN)
 			return -EINVAL;
 		attrs &= ~(1 << OVS_KEY_ATTR_ETHERTYPE);
 	} else {
