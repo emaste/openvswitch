@@ -515,6 +515,7 @@ static void facet_reset_counters(struct facet *);
 static void facet_push_stats(struct facet *);
 static void facet_learn(struct facet *);
 static void facet_account(struct facet *);
+static void push_all_stats(void);
 
 static struct subfacet *facet_get_subfacet(struct facet *);
 
@@ -597,6 +598,7 @@ static void port_run_fast(struct ofport_dpif *);
 static void port_wait(struct ofport_dpif *);
 static int set_cfm(struct ofport *, const struct cfm_settings *);
 static void ofport_clear_priorities(struct ofport_dpif *);
+static void run_fast_rl(void);
 
 struct dpif_completion {
     struct list list_node;
@@ -907,6 +909,7 @@ lookup_ofproto_dpif_by_port_name(const char *name)
 static int
 type_run(const char *type)
 {
+    static long long int push_timer = LLONG_MIN;
     struct dpif_backer *backer;
     char *devname;
     int error;
@@ -919,6 +922,16 @@ type_run(const char *type)
     }
 
     dpif_run(backer->dpif);
+
+    /* The most natural place to push facet statistics is when they're pulled
+     * from the datapath.  However, when there are many flows in the datapath,
+     * this expensive operation can occur so frequently, that it reduces our
+     * ability to quickly set up flows.  To reduce the cost, we push statistics
+     * here instead. */
+    if (time_msec() > push_timer) {
+        push_timer = time_msec() + 2000;
+        push_all_stats();
+    }
 
     if (backer->need_revalidate
         || !tag_set_is_empty(&backer->revalidate_set)) {
@@ -1007,6 +1020,7 @@ type_run(const char *type)
                 if (need_revalidate
                     || tag_set_intersects(&revalidate_set, facet->tags)) {
                     facet_revalidate(facet);
+                    run_fast_rl();
                 }
             }
         }
@@ -1074,17 +1088,9 @@ type_run(const char *type)
 }
 
 static int
-type_run_fast(const char *type)
+dpif_backer_run_fast(struct dpif_backer *backer, int max_batch)
 {
-    struct dpif_backer *backer;
     unsigned int work;
-
-    backer = shash_find_data(&all_dpif_backers, type);
-    if (!backer) {
-        /* This is not necessarily a problem, since backers are only
-         * created on demand. */
-        return 0;
-    }
 
     /* Handle one or more batches of upcalls, until there's nothing left to do
      * or until we do a fixed total amount of work.
@@ -1096,8 +1102,8 @@ type_run_fast(const char *type)
      * optimizations can make major improvements on some benchmarks and
      * presumably for real traffic as well. */
     work = 0;
-    while (work < FLOW_MISS_MAX_BATCH) {
-        int retval = handle_upcalls(backer, FLOW_MISS_MAX_BATCH - work);
+    while (work < max_batch) {
+        int retval = handle_upcalls(backer, max_batch - work);
         if (retval <= 0) {
             return -retval;
         }
@@ -1105,6 +1111,58 @@ type_run_fast(const char *type)
     }
 
     return 0;
+}
+
+static int
+type_run_fast(const char *type)
+{
+    struct dpif_backer *backer;
+
+    backer = shash_find_data(&all_dpif_backers, type);
+    if (!backer) {
+        /* This is not necessarily a problem, since backers are only
+         * created on demand. */
+        return 0;
+    }
+
+    return dpif_backer_run_fast(backer, FLOW_MISS_MAX_BATCH);
+}
+
+static void
+run_fast_rl(void)
+{
+    static long long int port_rl = LLONG_MIN;
+    static unsigned int backer_rl = 0;
+
+    if (time_msec() >= port_rl) {
+        struct ofproto_dpif *ofproto;
+        struct ofport_dpif *ofport;
+
+        HMAP_FOR_EACH (ofproto, all_ofproto_dpifs_node, &all_ofproto_dpifs) {
+
+            HMAP_FOR_EACH (ofport, up.hmap_node, &ofproto->up.ports) {
+                port_run_fast(ofport);
+            }
+        }
+        port_rl = time_msec() + 200;
+    }
+
+    /* XXX: We have to be careful not to do too much work in this function.  If
+     * we call dpif_backer_run_fast() too often, or with too large a batch,
+     * performance improves signifcantly, but at a cost.  It's possible for the
+     * number of flows in the datapath to increase without bound, and for poll
+     * loops to take 10s of seconds.   The correct solution to this problem,
+     * long term, is to separate flow miss handling into it's own thread so it
+     * isn't affected by revalidations, and expirations.  Until then, this is
+     * the best we can do. */
+    if (++backer_rl >= 10) {
+        struct shash_node *node;
+
+        backer_rl = 0;
+        SHASH_FOR_EACH (node, &all_dpif_backers) {
+            dpif_backer_run_fast(node->data, 1);
+        }
+    }
 }
 
 static void
@@ -2937,6 +2995,8 @@ mirror_get_stats(struct ofproto *ofproto_, void *aux,
         return 0;
     }
 
+    push_all_stats();
+
     *packets = mirror->packet_count;
     *bytes = mirror->byte_count;
 
@@ -3194,6 +3254,8 @@ port_get_stats(const struct ofport *ofport_, struct netdev_stats *stats)
 {
     struct ofport_dpif *ofport = ofport_dpif_cast(ofport_);
     int error;
+
+    push_all_stats();
 
     error = netdev_get_stats(ofport->up.netdev, stats);
 
@@ -4159,7 +4221,6 @@ update_subfacet_stats(struct subfacet *subfacet,
         facet_account(facet);
         facet->accounted_bytes = facet->byte_count;
     }
-    facet_push_stats(facet);
 }
 
 /* 'key' with length 'key_len' bytes is a flow in 'dpif' that we know nothing
@@ -4203,13 +4264,13 @@ update_stats(struct dpif_backer *backer)
     const struct dpif_flow_stats *stats;
     struct dpif_flow_dump dump;
     const struct nlattr *key;
+    struct ofproto_dpif *ofproto;
     size_t key_len;
 
     dpif_flow_dump_start(&dump, backer->dpif);
     while (dpif_flow_dump_next(&dump, &key, &key_len, NULL, NULL, &stats)) {
         struct flow flow;
         struct subfacet *subfacet;
-        struct ofproto_dpif *ofproto;
         struct ofport_dpif *ofport;
         uint32_t key_hash;
 
@@ -4220,7 +4281,6 @@ update_stats(struct dpif_backer *backer)
 
         ofproto->total_subfacet_count += hmap_count(&ofproto->subfacets);
         ofproto->n_update_stats++;
-        update_moving_averages(ofproto);
 
         ofport = get_ofp_port(ofproto, flow.in_port);
         if (ofport && ofport->tnl_port) {
@@ -4249,8 +4309,14 @@ update_stats(struct dpif_backer *backer)
             delete_unexpected_flow(ofproto, key, key_len);
             break;
         }
+        run_fast_rl();
     }
     dpif_flow_dump_done(&dump);
+
+    HMAP_FOR_EACH (ofproto, all_ofproto_dpifs_node, &all_ofproto_dpifs) {
+        update_moving_averages(ofproto);
+    }
+
 }
 
 /* Calculates and returns the number of milliseconds of idle time after which
@@ -4523,13 +4589,14 @@ facet_learn(struct facet *facet)
     struct ofproto_dpif *ofproto = ofproto_dpif_cast(facet->rule->up.ofproto);
     struct subfacet *subfacet= CONTAINER_OF(list_front(&facet->subfacets),
                                             struct subfacet, list_node);
+    long long int now = time_msec();
     struct action_xlate_ctx ctx;
 
-    if (time_msec() < facet->learn_rl) {
+    if (!facet->has_fin_timeout && now < facet->learn_rl) {
         return;
     }
 
-    facet->learn_rl = time_msec() + 500;
+    facet->learn_rl = now + 500;
 
     if (!facet->has_learn
         && !facet->has_normal
@@ -5038,6 +5105,36 @@ facet_push_stats(struct facet *facet)
 }
 
 static void
+push_all_stats__(bool run_fast)
+{
+    static long long int rl = LLONG_MIN;
+    struct ofproto_dpif *ofproto;
+
+    if (time_msec() < rl) {
+        return;
+    }
+
+    HMAP_FOR_EACH (ofproto, all_ofproto_dpifs_node, &all_ofproto_dpifs) {
+        struct facet *facet;
+
+        HMAP_FOR_EACH (facet, hmap_node, &ofproto->facets) {
+            facet_push_stats(facet);
+            if (run_fast) {
+                run_fast_rl();
+            }
+        }
+    }
+
+    rl = time_msec() + 100;
+}
+
+static void
+push_all_stats(void)
+{
+    push_all_stats__(true);
+}
+
+static void
 rule_credit_stats(struct rule_dpif *rule, const struct dpif_flow_stats *stats)
 {
     rule->packet_count += stats->n_packets;
@@ -5203,6 +5300,7 @@ subfacet_destroy_batch(struct ofproto_dpif *ofproto,
         subfacet_reset_dp_stats(subfacets[i], &stats[i]);
         subfacets[i]->path = SF_NOT_INSTALLED;
         subfacet_destroy(subfacets[i]);
+        run_fast_rl();
     }
 }
 
@@ -5515,13 +5613,14 @@ rule_destruct(struct rule *rule_)
 static void
 rule_get_stats(struct rule *rule_, uint64_t *packets, uint64_t *bytes)
 {
-    struct ofproto_dpif *ofproto = ofproto_dpif_cast(rule_->ofproto);
     struct rule_dpif *rule = rule_dpif_cast(rule_);
     struct facet *facet;
 
-    HMAP_FOR_EACH (facet, hmap_node, &ofproto->facets) {
-        facet_push_stats(facet);
-    }
+    /* push_all_stats() can handle flow misses which, when using the learn
+     * action, can cause rules to be added and deleted.  This can corrupt our
+     * caller's datastructures which assume that rule_get_stats() doesn't have
+     * an impact on the flow table. To be safe, we disable miss handling. */
+    push_all_stats__(false);
 
     /* Start from historical data for 'rule' itself that are no longer tracked
      * in facets.  This counts, for example, facets that have expired. */

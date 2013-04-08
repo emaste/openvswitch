@@ -320,35 +320,6 @@ netdev_close(struct netdev *netdev)
     }
 }
 
-/* Returns true if a network device named 'name' exists and may be opened,
- * otherwise false. */
-bool
-netdev_exists(const char *name)
-{
-    struct netdev *netdev;
-    int error;
-
-    error = netdev_open(name, "system", &netdev);
-    if (!error) {
-        netdev_close(netdev);
-        return true;
-    } else {
-        if (error != ENODEV) {
-            VLOG_WARN("failed to open network device %s: %s",
-                      name, strerror(error));
-        }
-        return false;
-    }
-}
-
-/* Returns true if a network device named 'name' is currently opened,
- * otherwise false. */
-bool
-netdev_is_open(const char *name)
-{
-    return !!shash_find_data(&netdev_dev_shash, name);
-}
-
 /* Parses 'netdev_name_', which is of the form [type@]name into its component
  * pieces.  'name' and 'type' must be freed by the caller. */
 void
