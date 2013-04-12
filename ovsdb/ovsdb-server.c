@@ -1,4 +1,4 @@
-/* Copyright (c) 2009, 2010, 2011, 2012 Nicira, Inc.
+/* Copyright (c) 2009, 2010, 2011, 2012, 2013 Nicira, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -76,6 +76,15 @@ static unixctl_cb_func ovsdb_server_exit;
 static unixctl_cb_func ovsdb_server_compact;
 static unixctl_cb_func ovsdb_server_reconnect;
 
+struct add_remote_aux {
+    struct sset *remotes;
+    struct db *dbs;
+    size_t n_dbs;
+};
+static unixctl_cb_func ovsdb_server_add_remote;
+static unixctl_cb_func ovsdb_server_remove_remote;
+static unixctl_cb_func ovsdb_server_list_remotes;
+
 static void parse_options(int *argc, char **argvp[],
                           struct sset *remotes, char **unixctl_pathp,
                           char **run_command);
@@ -101,6 +110,7 @@ main(int argc, char *argv[])
     bool exiting;
     int retval;
     long long int status_timer = LLONG_MIN;
+    struct add_remote_aux add_remote_aux;
 
     struct db *dbs;
     int n_dbs;
@@ -181,6 +191,16 @@ main(int argc, char *argv[])
     unixctl_command_register("ovsdb-server/reconnect", "", 0, 0,
                              ovsdb_server_reconnect, jsonrpc);
 
+    add_remote_aux.remotes = &remotes;
+    add_remote_aux.dbs = dbs;
+    add_remote_aux.n_dbs = n_dbs;
+    unixctl_command_register("ovsdb-server/add-remote", "REMOTE", 1, 1,
+                             ovsdb_server_add_remote, &add_remote_aux);
+    unixctl_command_register("ovsdb-server/remove-remote", "REMOTE", 1, 1,
+                             ovsdb_server_remove_remote, &remotes);
+    unixctl_command_register("ovsdb-server/list-remotes", "", 0, 0,
+                             ovsdb_server_list_remotes, &remotes);
+
     exiting = false;
     while (!exiting) {
         int i;
@@ -198,9 +218,13 @@ main(int argc, char *argv[])
             simap_destroy(&usage);
         }
 
+        /* Run unixctl_server_run() before reconfigure_from_db() because
+         * ovsdb-server/add-remote and ovsdb-server/remove-remote can change
+         * the set of remotes that reconfigure_from_db() uses. */
+        unixctl_server_run(unixctl);
+
         reconfigure_from_db(jsonrpc, dbs, n_dbs, &remotes);
         ovsdb_jsonrpc_server_run(jsonrpc);
-        unixctl_server_run(unixctl);
 
         for (i = 0; i < n_dbs; i++) {
             ovsdb_trigger_run(dbs[i].db, time_msec());
@@ -262,12 +286,12 @@ find_db(const struct db dbs[], size_t n_dbs, const char *db_name)
     return NULL;
 }
 
-static void
-parse_db_column(const struct db dbs[], size_t n_dbs,
-                const char *name_,
-                const struct db **dbp,
-                const struct ovsdb_table **tablep,
-                const struct ovsdb_column **columnp)
+static char * WARN_UNUSED_RESULT
+parse_db_column__(const struct db dbs[], size_t n_dbs,
+                  const char *name_, char *name,
+                  const struct db **dbp,
+                  const struct ovsdb_table **tablep,
+                  const struct ovsdb_column **columnp)
 {
     const char *table_name, *column_name;
     const struct ovsdb_column *column;
@@ -275,15 +299,17 @@ parse_db_column(const struct db dbs[], size_t n_dbs,
     const char *tokens[3];
     char *save_ptr = NULL;
     const struct db *db;
-    char *name;
 
-    name = xstrdup(name_);
+    *dbp = NULL;
+    *tablep = NULL;
+    *columnp = NULL;
+
     strtok_r(name, ":", &save_ptr); /* "db:" */
     tokens[0] = strtok_r(NULL, ",", &save_ptr);
     tokens[1] = strtok_r(NULL, ",", &save_ptr);
     tokens[2] = strtok_r(NULL, ",", &save_ptr);
     if (!tokens[0] || !tokens[1]) {
-        ovs_fatal(0, "\"%s\": invalid syntax", name_);
+        return xasprintf("\"%s\": invalid syntax", name_);
     }
     if (tokens[2]) {
         const char *db_name = tokens[0];
@@ -292,12 +318,13 @@ parse_db_column(const struct db dbs[], size_t n_dbs,
 
         db = find_db(dbs, n_dbs, tokens[0]);
         if (!db) {
-            ovs_fatal(0, "\"%s\": no database named %s", name_, db_name);
+            return xasprintf("\"%s\": no database named %s", name_, db_name);
         }
     } else {
         if (n_dbs > 1) {
-            ovs_fatal(0, "\"%s\": database name must be specified (because "
-                      "multiple databases are configured)", name_);
+            return xasprintf("\"%s\": database name must be specified "
+                             "(because multiple databases are configured)",
+                             name_);
         }
 
         table_name = tokens[0];
@@ -307,44 +334,61 @@ parse_db_column(const struct db dbs[], size_t n_dbs,
 
     table = ovsdb_get_table(db->db, table_name);
     if (!table) {
-        ovs_fatal(0, "\"%s\": no table named %s", name_, table_name);
+        return xasprintf("\"%s\": no table named %s", name_, table_name);
     }
 
     column = ovsdb_table_schema_get_column(table->schema, column_name);
     if (!column) {
-        ovs_fatal(0, "\"%s\": table \"%s\" has no column \"%s\"",
-                  name_, table_name, column_name);
+        return xasprintf("\"%s\": table \"%s\" has no column \"%s\"",
+                         name_, table_name, column_name);
     }
-    free(name);
 
     *dbp = db;
     *columnp = column;
     *tablep = table;
+    return NULL;
 }
 
-static void
+/* Returns NULL if successful, otherwise a malloc()'d string describing the
+ * error. */
+static char * WARN_UNUSED_RESULT
+parse_db_column(const struct db dbs[], size_t n_dbs,
+                const char *name_,
+                const struct db **dbp,
+                const struct ovsdb_table **tablep,
+                const struct ovsdb_column **columnp)
+{
+    char *name = xstrdup(name_);
+    char *retval = parse_db_column__(dbs, n_dbs, name_, name,
+                                     dbp, tablep, columnp);
+    free(name);
+    return retval;
+}
+
+/* Returns NULL if successful, otherwise a malloc()'d string describing the
+ * error. */
+static char * WARN_UNUSED_RESULT
 parse_db_string_column(const struct db dbs[], size_t n_dbs,
                        const char *name,
                        const struct db **dbp,
                        const struct ovsdb_table **tablep,
                        const struct ovsdb_column **columnp)
 {
-    const struct ovsdb_column *column;
-    const struct ovsdb_table *table;
-    const struct db *db;
+    char *retval;
 
-    parse_db_column(dbs, n_dbs, name, &db, &table, &column);
-
-    if (column->type.key.type != OVSDB_TYPE_STRING
-        || column->type.value.type != OVSDB_TYPE_VOID) {
-        ovs_fatal(0, "\"%s\": table \"%s\" column \"%s\" is "
-                  "not string or set of strings",
-                  name, table->schema->name, column->name);
+    retval = parse_db_column(dbs, n_dbs, name, dbp, tablep, columnp);
+    if (retval) {
+        return retval;
     }
 
-    *dbp = db;
-    *columnp = column;
-    *tablep = table;
+    if ((*columnp)->type.key.type != OVSDB_TYPE_STRING
+        || (*columnp)->type.value.type != OVSDB_TYPE_VOID) {
+        return xasprintf("\"%s\": table \"%s\" column \"%s\" is "
+                         "not string or set of strings",
+                         name, (*tablep)->schema->name, (*columnp)->name);
+    }
+
+    return NULL;
 }
 
 static OVS_UNUSED const char *
@@ -357,8 +401,13 @@ query_db_string(const struct db dbs[], size_t n_dbs, const char *name)
         const struct ovsdb_table *table;
         const struct ovsdb_row *row;
         const struct db *db;
+        char *retval;
 
-        parse_db_string_column(dbs, n_dbs, name, &db, &table, &column);
+        retval = parse_db_string_column(dbs, n_dbs, name,
+                                        &db, &table, &column);
+        if (retval) {
+            ovs_fatal(0, "%s", retval);
+        }
 
         HMAP_FOR_EACH (row, hmap_node, &table->rows) {
             const struct ovsdb_datum *datum;
@@ -588,8 +637,12 @@ query_db_remotes(const char *name, const struct db dbs[], size_t n_dbs,
     const struct ovsdb_table *table;
     const struct ovsdb_row *row;
     const struct db *db;
+    char *retval;
 
-    parse_db_column(dbs, n_dbs, name, &db, &table, &column);
+    retval = parse_db_column(dbs, n_dbs, name, &db, &table, &column);
+    if (retval) {
+        ovs_fatal(0, "%s", retval);
+    }
 
     if (column->type.key.type == OVSDB_TYPE_STRING
         && column->type.value.type == OVSDB_TYPE_VOID) {
@@ -691,12 +744,16 @@ update_remote_rows(const struct db dbs[], size_t n_dbs,
     const struct ovsdb_column *column;
     const struct ovsdb_row *row;
     const struct db *db;
+    char *retval;
 
     if (strncmp("db:", remote_name, 3)) {
         return;
     }
 
-    parse_db_column(dbs, n_dbs, remote_name, &db, &table, &column);
+    retval = parse_db_column(dbs, n_dbs, remote_name, &db, &table, &column);
+    if (retval) {
+        ovs_fatal(0, "%s", retval);
+    }
 
     if (column->type.key.type != OVSDB_TYPE_UUID
         || !column->type.key.u.uuid.refTable
@@ -836,6 +893,72 @@ ovsdb_server_reconnect(struct unixctl_conn *conn, int argc OVS_UNUSED,
 
     ovsdb_jsonrpc_server_reconnect(jsonrpc);
     unixctl_command_reply(conn, NULL);
+}
+
+/* "ovsdb-server/add-remote REMOTE": adds REMOTE to the set of remotes that
+ * ovsdb-server services. */
+static void
+ovsdb_server_add_remote(struct unixctl_conn *conn, int argc OVS_UNUSED,
+                        const char *argv[], void *aux_)
+{
+    struct add_remote_aux *aux = aux_;
+    const char *remote = argv[1];
+
+    const struct ovsdb_column *column;
+    const struct ovsdb_table *table;
+    const struct db *db;
+    char *retval;
+
+    retval = (strncmp("db:", remote, 3)
+              ? NULL
+              : parse_db_column(aux->dbs, aux->n_dbs, remote,
+                                &db, &table, &column));
+    if (!retval) {
+        sset_add(aux->remotes, remote);
+        unixctl_command_reply(conn, NULL);
+    } else {
+        unixctl_command_reply_error(conn, retval);
+        free(retval);
+    }
+}
+
+/* "ovsdb-server/remove-remote REMOTE": removes REMOTE frmo the set of remotes
+ * that ovsdb-server services. */
+static void
+ovsdb_server_remove_remote(struct unixctl_conn *conn, int argc OVS_UNUSED,
+                           const char *argv[], void *remotes_)
+{
+    struct sset *remotes = remotes_;
+    struct sset_node *node;
+
+    node = sset_find(remotes, argv[1]);
+    if (node) {
+        sset_delete(remotes, node);
+        unixctl_command_reply(conn, NULL);
+    } else {
+        unixctl_command_reply_error(conn, "no such remote");
+    }
+}
+
+/* "ovsdb-server/list-remotes": outputs a list of configured rmeotes. */
+static void
+ovsdb_server_list_remotes(struct unixctl_conn *conn, int argc OVS_UNUSED,
+                          const char *argv[] OVS_UNUSED, void *remotes_)
+{
+    struct sset *remotes = remotes_;
+    const char **list, **p;
+    struct ds s;
+
+    ds_init(&s);
+
+    list = sset_sort(remotes);
+    for (p = list; *p; p++) {
+        ds_put_format(&s, "%s\n", *p);
+    }
+    free(list);
+
+    unixctl_command_reply(conn, ds_cstr(&s));
+    ds_destroy(&s);
 }
 
 static void
