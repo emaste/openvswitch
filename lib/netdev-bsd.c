@@ -31,7 +31,9 @@
 #include <net/if_media.h>
 #include <net/if_tap.h>
 #include <netinet/in.h>
+#if defined(__FreeBSD__)
 #include <net/if_mib.h>
+#endif /* defined(__FreeBSD__) */
 #include <poll.h>
 #include <string.h>
 #include <unistd.h>
@@ -343,12 +345,21 @@ netdev_bsd_create_tap(const struct netdev_class *class, const char *name,
     }
 
     /* Change the name of the tap device */
+#if defined(SIOCSIFNAME)
     ifr.ifr_data = (void *)name;
     if (ioctl(af_inet_sock, SIOCSIFNAME, &ifr) == -1) {
         error = errno;
         destroy_tap(netdev_dev->tap_fd, ifr.ifr_name);
         goto error_undef_notifier;
     }
+#else
+    /*
+     * XXX
+     * NetBSD doesn't support inteface renaming.
+     */
+    VLOG_INFO("tap %s is created for bridge %s", ifr.ifr_name, name);
+    name = ifr.ifr_name; /* XXX */
+#endif
 
     /* set non-blocking. */
     error = set_nonblocking(netdev_dev->tap_fd);
@@ -359,7 +370,9 @@ netdev_bsd_create_tap(const struct netdev_class *class, const char *name,
 
     /* Turn device UP */
     ifr.ifr_flags = (uint16_t)IFF_UP;
+#if defined(__FreeBSD__)
     ifr.ifr_flagshigh = 0;
+#endif
     strncpy(ifr.ifr_name, name, sizeof ifr.ifr_name);
     if (ioctl(af_inet_sock, SIOCSIFFLAGS, &ifr) == -1) {
         error = errno;
@@ -868,8 +881,9 @@ netdev_bsd_get_carrier(const struct netdev *netdev_, bool *carrier)
 
 /* Retrieves current device stats for 'netdev'. */
 static int
-netdev_bsd_get_stats(const struct netdev *netdev_, struct netdev_stats *stats)
+netdev_bsd_get_stats(const struct netdev *netdev_ __attribute__((__unused__)), struct netdev_stats *stats)
 {
+#if defined(__FreeBSD__)
     int if_count, i;
     int mib[6];
     size_t len;
@@ -928,6 +942,11 @@ netdev_bsd_get_stats(const struct netdev *netdev_, struct netdev_stats *stats)
     }
 
     return 0;
+#else
+    /* XXXnotyet */
+    memset(stats, 0, sizeof(*stats));
+    return 0;
+#endif
 }
 
 static uint32_t
@@ -1202,7 +1221,9 @@ nd_to_iff_flags(enum netdev_flags nd)
     }
     if (nd & NETDEV_PROMISC) {
         iff |= IFF_PROMISC;
+#if defined(IFF_PPROMISC)
         iff |= IFF_PPROMISC;
+#endif
     }
     return iff;
 }
@@ -1388,7 +1409,11 @@ get_flags(const struct netdev *netdev, int *flags)
 
     error = netdev_bsd_do_ioctl(netdev, &ifr, SIOCGIFFLAGS, "SIOCGIFFLAGS");
 
+#if defined(__FreeBSD__)
     *flags = 0xFFFF0000 & (ifr.ifr_flagshigh << 16);
+#else
+    *flags = 0;
+#endif
     *flags |= 0x0000FFFF & ifr.ifr_flags;
 
     return error;
@@ -1400,7 +1425,9 @@ set_flags(struct netdev *netdev, int flags)
     struct ifreq ifr;
 
     ifr.ifr_flags = 0x0000FFFF & flags;
+#if defined(__FreeBSD__)
     ifr.ifr_flagshigh = (0xFFFF0000 & flags) >> 16;
+#endif
 
     return netdev_bsd_do_ioctl(netdev, &ifr, SIOCSIFFLAGS, "SIOCSIFFLAGS");
 }
@@ -1458,6 +1485,13 @@ static int
 set_etheraddr(const char *netdev_name, int hwaddr_family,
               int hwaddr_len, const uint8_t mac[ETH_ADDR_LEN])
 {
+#if defined(__NetBSD__)
+    (void)netdev_name;
+    (void)hwaddr_family;
+    (void)hwaddr_len;
+    (void)mac;
+    return ENOTSUP; /* XXX */
+#else
     struct ifreq ifr;
 
     memset(&ifr, 0, sizeof ifr);
@@ -1471,6 +1505,7 @@ set_etheraddr(const char *netdev_name, int hwaddr_family,
         return errno;
     }
     return 0;
+#endif
 }
 
 static int

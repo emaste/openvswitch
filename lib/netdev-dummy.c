@@ -36,10 +36,10 @@
 
 VLOG_DEFINE_THIS_MODULE(netdev_dummy);
 
-#ifdef __FreeBSD__
-#define FREE_BSD 1
+#if defined(__FreeBSD__) || defined(__NetBSD__)
+#define REGISTER_TUNNEL 1
 #else
-#define FREE_BSD 0
+#define REGISTER_TUNNEL 0
 #endif
 
 struct netdev_dev_dummy {
@@ -586,7 +586,7 @@ netdev_dummy_register(bool override)
     }
     netdev_register_provider(&dummy_class);
 
-    if (FREE_BSD) {
+    if (REGISTER_TUNNEL) {
         netdev_vport_tunnel_register();
     }
 }
