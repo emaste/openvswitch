@@ -102,6 +102,8 @@ struct netdev_dev_bsd {
 
     bool tap_opened;
     int tap_fd;         /* TAP character device, if any */
+
+    char *kernel_name;
 };
 
 
@@ -301,6 +303,7 @@ netdev_bsd_create_system(const struct netdev_class *class, const char *name,
     netdev_dev = xzalloc(sizeof *netdev_dev);
     netdev_dev->change_seq = 1;
     netdev_dev_init(&netdev_dev->netdev_dev, name, class);
+    netdev_dev->kernel_name = xstrdup(name);
     *netdev_devp = &netdev_dev->netdev_dev;
 
     return 0;
@@ -316,6 +319,7 @@ netdev_bsd_create_tap(const struct netdev_class *class, const char *name,
     struct netdev_dev_bsd *netdev_dev = NULL;
     int error = 0;
     struct ifreq ifr;
+    char *kernel_name = NULL;
 
     error = cache_notifier_ref();
     if (error) {
@@ -352,19 +356,19 @@ netdev_bsd_create_tap(const struct netdev_class *class, const char *name,
         destroy_tap(netdev_dev->tap_fd, ifr.ifr_name);
         goto error_undef_notifier;
     }
+    kernel_name = xstrdup(name);
 #else
     /*
-     * XXX
      * NetBSD doesn't support inteface renaming.
      */
     VLOG_INFO("tap %s is created for bridge %s", ifr.ifr_name, name);
-    name = ifr.ifr_name; /* XXX */
+    kernel_name = xstrdup(ifr.ifr_name);
 #endif
 
     /* set non-blocking. */
     error = set_nonblocking(netdev_dev->tap_fd);
     if (error) {
-        destroy_tap(netdev_dev->tap_fd, name);
+        destroy_tap(netdev_dev->tap_fd, kernel_name);
         goto error_undef_notifier;
     }
 
@@ -373,16 +377,17 @@ netdev_bsd_create_tap(const struct netdev_class *class, const char *name,
 #if defined(__FreeBSD__)
     ifr.ifr_flagshigh = 0;
 #endif
-    strncpy(ifr.ifr_name, name, sizeof ifr.ifr_name);
+    strncpy(ifr.ifr_name, kernel_name, sizeof ifr.ifr_name);
     if (ioctl(af_inet_sock, SIOCSIFFLAGS, &ifr) == -1) {
         error = errno;
-        destroy_tap(netdev_dev->tap_fd, name);
+        destroy_tap(netdev_dev->tap_fd, kernel_name);
         goto error_undef_notifier;
     }
 
     /* initialize the device structure and
      * link the structure to its netdev */
     netdev_dev_init(&netdev_dev->netdev_dev, name, class);
+    netdev_dev->kernel_name = kernel_name;
     *netdev_devp = &netdev_dev->netdev_dev;
 
     return 0;
@@ -391,6 +396,7 @@ error_undef_notifier:
     cache_notifier_unref();
 error:
     free(netdev_dev);
+    free(kernel_name);
     return error;
 }
 
@@ -403,8 +409,9 @@ netdev_bsd_destroy(struct netdev_dev *netdev_dev_)
 
     if (netdev_dev->tap_fd >= 0 &&
             !strcmp(netdev_dev_get_type(netdev_dev_), "tap")) {
-        destroy_tap(netdev_dev->tap_fd, netdev_dev_get_name(netdev_dev_));
+        destroy_tap(netdev_dev->tap_fd, netdev_dev->kernel_name);
     }
+    free(netdev_dev->kernel_name);
     free(netdev_dev);
 }
 
@@ -476,7 +483,7 @@ netdev_bsd_listen(struct netdev *netdev_)
     /* open the pcap device. The device is opened in non-promiscuous mode
      * because the interface flags are manually set by the caller. */
     errbuf[0] = '\0';
-    netdev->pcap_handle = pcap_open_live(netdev_get_name(netdev_), PCAP_SNAPLEN,
+    netdev->pcap_handle = pcap_open_live(netdev_dev->kernel_name, PCAP_SNAPLEN,
 				     0, 1000, errbuf);
     if (netdev->pcap_handle == NULL) {
         VLOG_ERR("%s: pcap_open_live failed: %s",
@@ -686,8 +693,10 @@ netdev_bsd_drain(struct netdev *netdev_)
 {
     struct ifreq ifr;
     struct netdev_bsd *netdev = netdev_bsd_cast(netdev_);
+    struct netdev_dev_bsd * netdev_dev =
+        netdev_dev_bsd_cast(netdev_get_dev(netdev_));
 
-    strcpy(ifr.ifr_name, netdev_get_name(netdev_));
+    strcpy(ifr.ifr_name, netdev_dev->kernel_name);
     if (ioctl(netdev->netdev_fd, BIOCFLUSH, &ifr) == -1) {
         VLOG_DBG_RL(&rl, "%s: ioctl(BIOCFLUSH) failed: %s",
                     netdev_get_name(netdev_), strerror(errno));
@@ -774,7 +783,7 @@ netdev_bsd_set_etheraddr(struct netdev *netdev_,
 
     if (!(netdev_dev->cache_valid & VALID_ETHERADDR)
         || !eth_addr_equals(netdev_dev->etheraddr, mac)) {
-        error = set_etheraddr(netdev_get_name(netdev_), AF_LINK, ETH_ADDR_LEN,
+        error = set_etheraddr(netdev_dev->kernel_name, AF_LINK, ETH_ADDR_LEN,
                               mac);
         if (!error) {
             netdev_dev->cache_valid |= VALID_ETHERADDR;
@@ -799,7 +808,7 @@ netdev_bsd_get_etheraddr(const struct netdev *netdev_,
         netdev_dev_bsd_cast(netdev_get_dev(netdev_));
 
     if (!(netdev_dev->cache_valid & VALID_ETHERADDR)) {
-        int error = get_etheraddr(netdev_get_name(netdev_),
+        int error = get_etheraddr(netdev_dev->kernel_name,
                                   netdev_dev->etheraddr);
         if (error) {
             return error;
@@ -857,7 +866,7 @@ netdev_bsd_get_carrier(const struct netdev *netdev_, bool *carrier)
         struct ifmediareq ifmr;
 
         memset(&ifmr, 0, sizeof(ifmr));
-        strncpy(ifmr.ifm_name, netdev_get_name(netdev_), sizeof ifmr.ifm_name);
+        strncpy(ifmr.ifm_name, netdev_dev->kernel_name, sizeof ifmr.ifm_name);
 
         if (ioctl(af_inet_sock, SIOCGIFMEDIA, &ifmr) == -1) {
             VLOG_DBG_RL(&rl, "%s: ioctl(SIOCGIFMEDIA) failed: %s",
@@ -1512,7 +1521,10 @@ static int
 netdev_bsd_do_ioctl(const struct netdev *netdev, struct ifreq *ifr,
                     unsigned long cmd, const char *cmd_name)
 {
-    strncpy(ifr->ifr_name, netdev_get_name(netdev), sizeof ifr->ifr_name);
+    struct netdev_dev_bsd *netdev_dev =
+        netdev_dev_bsd_cast(netdev_get_dev(netdev));
+
+    strncpy(ifr->ifr_name, netdev_dev->kernel_name, sizeof ifr->ifr_name);
     if (ioctl(af_inet_sock, cmd, ifr) == -1) {
         VLOG_DBG_RL(&rl, "%s: ioctl(%s) failed: %s",
                     netdev_get_name(netdev), cmd_name, strerror(errno));
