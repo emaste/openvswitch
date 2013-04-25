@@ -39,8 +39,9 @@
 #include <string.h>
 #include <unistd.h>
 #include <sys/sysctl.h>
-#if defined(__NetBSD__)
 #include <net/route.h>
+#if defined(__FreeBSD__) && !defined(RT_ADVANCE)
+#define RT_ADVANCE(x, n) (x += SA_SIZE(x))
 #endif
 
 #include "rtbsd.h"
@@ -1242,7 +1243,6 @@ netdev_bsd_get_in6(const struct netdev *netdev_, struct in6_addr *in6)
     return 0;
 }
 
-#if defined(__NetBSD__)
 static struct netdev_dev *
 find_netdev_by_kernel_name(const char *kernel_name)
 {
@@ -1274,13 +1274,11 @@ netdev_bsd_convert_kernel_name_to_ovs_name(const char *kernel_name)
     }
     return netdev_dev_get_name(netdev_dev);
 }
-#endif
 
 static int
 netdev_bsd_get_next_hop(const struct in_addr *host, struct in_addr *next_hop,
                         char **netdev_name)
 {
-#if defined(__NetBSD__)
     static int seq = 0;
     struct sockaddr_in sin;
     struct sockaddr_dl sdl;
@@ -1380,9 +1378,6 @@ netdev_bsd_get_next_hop(const struct in_addr *host, struct in_addr *next_hop,
     VLOG_DBG("host " IP_FMT " next-hop " IP_FMT " if %s",
       IP_ARGS(host->s_addr), IP_ARGS(next_hop->s_addr), *netdev_name);
     return 0;
-#else
-    return EOPNOTSUPP;
-#endif
 }
 
 static void
