@@ -325,6 +325,43 @@ A: No.  ERSPAN is an undocumented proprietary protocol.  As an
    alternative, Open vSwitch supports mirroring to a GRE tunnel (see
    above).
 
+Q: How do I connect two bridges?
+
+A: First, why do you want to do this?  Two connected bridges are not
+   much different from a single bridge, so you might as well just have
+   a single bridge with all your ports on it.
+
+   If you still want to connect two bridges, you can use a pair of
+   patch ports.  The following example creates bridges br0 and br1,
+   adds eth0 and tap0 to br0, adds tap1 to br1, and then connects br0
+   and br1 with a pair of patch ports.
+
+       ovs-vsctl add-br br0
+       ovs-vsctl add-port br0 eth0
+       ovs-vsctl add-port br0 tap0
+       ovs-vsctl add-br br1
+       ovs-vsctl add-port br1 tap1
+       ovs-vsctl \
+           -- add-port br0 patch0 \
+           -- set interface patch0 type=patch options:peer=patch1 \
+           -- add-port br1 patch1 \
+           -- set interface patch1 type=patch options:peer=patch0
+
+   Bridges connected with patch ports are much like a single bridge.
+   For instance, if the example above also added eth1 to br1, and both
+   eth0 and eth1 happened to be connected to the same next-hop switch,
+   then you could loop your network just as you would if you added
+   eth0 and eth1 to the same bridge (see the "Configuration Problems"
+   section below for more information).
+
+   If you are using Open vSwitch 1.9 or an earlier version, then you
+   need to be using the kernel module bundled with Open vSwitch rather
+   than the one that is integrated into Linux 3.3 and later, because
+   Open vSwitch 1.9 and earlier versions need kernel support for patch
+   ports.  This also means that in Open vSwitch 1.9 and earlier, patch
+   ports will not work with the userspace datapath, only with the
+   kernel module.
+
 Q: Why are there so many different ways to dump flows?
 
 A: Open vSwitch uses different kinds of flows for different purposes:
@@ -779,6 +816,21 @@ A: It is to be expected that the VMs can't access each other.  VLANs
    the machines you are trying to access are not on VLAN 9 (or 10) and
    that the Internet is not available on VLAN 9 (or 10).
 
+Q: I added a pair of VMs on the same VLAN, like this:
+
+       ovs-vsctl add-br br0
+       ovs-vsctl add-port br0 eth0
+       ovs-vsctl add-port br0 tap0 tag=9
+       ovs-vsctl add-port br0 tap1 tag=9
+
+    The VMs can access each other, but not the external network or the
+    Internet.
+
+A: It seems likely that the machines you are trying to access in the
+   external network are not on VLAN 9 and that the Internet is not
+   available on VLAN 9.  Also, ensure VLAN 9 is set up as an allowed
+   trunk VLAN on the upstream switch port to which eth0 is connected.
+
 Q: Can I configure an IP address on a VLAN?
 
 A: Yes.  Use an "internal port" configured as an access port.  For
@@ -838,8 +890,8 @@ A: Do you have a controller configured on br0 (as the commands above
    can refer to the answer there for more information.
 
 
-Controllers
------------
+Using OpenFlow (Manually or Via Controller)
+-------------------------------------------
 
 Q: What versions of OpenFlow does Open vSwitch support?
 
@@ -1099,6 +1151,23 @@ A: To debug network behavior problems, trace the path of a packet,
    It is likely that during one of these steps you will figure out the
    problem.  If not, then follow the ARP reply back to the origin, in
    reverse.
+
+Q: How do I make a flow drop packets?
+
+A: An empty set of actions causes a packet to be dropped.  You can
+   specify an empty set of actions with "actions=" on the ovs-ofctl
+   command line.  For example:
+
+       ovs-ofctl add-flow br0 priority=65535,actions=
+
+   would cause every packet entering switch br0 to be dropped.
+
+   You can write "drop" explicitly if you like.  The effect is the
+   same.  Thus, the following command also causes every packet
+   entering switch br0 to be dropped:
+
+       ovs-ofctl add-flow br0 priority=65535,actions=drop
+
 
 Contact 
 -------
