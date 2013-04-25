@@ -897,12 +897,12 @@ netdev_bsd_get_carrier(const struct netdev *netdev_, bool *carrier)
 static int
 netdev_bsd_get_stats(const struct netdev *netdev_, struct netdev_stats *stats)
 {
+    struct if_data *ifd = NULL;
 #if defined(__FreeBSD__)
     int if_count, i;
     int mib[6];
     size_t len;
     struct ifmibdata ifmd;
-
 
     mib[0] = CTL_NET;
     mib[1] = PF_LINK;
@@ -928,39 +928,43 @@ netdev_bsd_get_stats(const struct netdev *netdev_, struct netdev_stats *stats)
                         netdev_get_name(netdev_), strerror(errno));
             return errno;
         } else if (!strcmp(ifmd.ifmd_name, netdev_get_name(netdev_))) {
-            stats->rx_packets = ifmd.ifmd_data.ifi_ipackets;
-            stats->tx_packets = ifmd.ifmd_data.ifi_opackets;
-            stats->rx_bytes = ifmd.ifmd_data.ifi_ibytes;
-            stats->tx_bytes = ifmd.ifmd_data.ifi_obytes;
-            stats->rx_errors = ifmd.ifmd_data.ifi_ierrors;
-            stats->tx_errors = ifmd.ifmd_data.ifi_oerrors;
-            stats->rx_dropped = ifmd.ifmd_data.ifi_iqdrops;
-            stats->tx_dropped = UINT64_MAX;
-            stats->multicast = ifmd.ifmd_data.ifi_imcasts;
-            stats->collisions = ifmd.ifmd_data.ifi_collisions;
-
-            stats->rx_length_errors = UINT64_MAX;
-            stats->rx_over_errors = UINT64_MAX;
-            stats->rx_crc_errors = UINT64_MAX;
-            stats->rx_frame_errors = UINT64_MAX;
-            stats->rx_fifo_errors = UINT64_MAX;
-            stats->rx_missed_errors = UINT64_MAX;
-
-            stats->tx_aborted_errors = UINT64_MAX;
-            stats->tx_carrier_errors = UINT64_MAX;
-            stats->tx_fifo_errors = UINT64_MAX;
-            stats->tx_heartbeat_errors = UINT64_MAX;
-            stats->tx_window_errors = UINT64_MAX;
+            ifd = &ifmd.ifmd_data;
             break;
         }
     }
+    if (ifd == NULL)
+    {
+        return ENOENT;
+    }
 
+    stats->rx_packets = ifmd.ifmd_data.ifi_ipackets;
+    stats->tx_packets = ifmd.ifmd_data.ifi_opackets;
+    stats->rx_bytes = ifmd.ifmd_data.ifi_ibytes;
+    stats->tx_bytes = ifmd.ifmd_data.ifi_obytes;
+    stats->rx_errors = ifmd.ifmd_data.ifi_ierrors;
+    stats->tx_errors = ifmd.ifmd_data.ifi_oerrors;
+    stats->rx_dropped = ifmd.ifmd_data.ifi_iqdrops;
+    stats->tx_dropped = UINT64_MAX;
+    stats->multicast = ifmd.ifmd_data.ifi_imcasts;
+    stats->collisions = ifmd.ifmd_data.ifi_collisions;
+
+    stats->rx_length_errors = UINT64_MAX;
+    stats->rx_over_errors = UINT64_MAX;
+    stats->rx_crc_errors = UINT64_MAX;
+    stats->rx_frame_errors = UINT64_MAX;
+    stats->rx_fifo_errors = UINT64_MAX;
+    stats->rx_missed_errors = UINT64_MAX;
+
+    stats->tx_aborted_errors = UINT64_MAX;
+    stats->tx_carrier_errors = UINT64_MAX;
+    stats->tx_fifo_errors = UINT64_MAX;
+    stats->tx_heartbeat_errors = UINT64_MAX;
+    stats->tx_window_errors = UINT64_MAX;
     return 0;
 #elif defined(__NetBSD__)
     struct netdev_dev_bsd *netdev_dev =
         netdev_dev_bsd_cast(netdev_get_dev(netdev_));
     struct ifdatareq ifdr;
-    struct if_data *ifd;
     int saved_errno;
     int ret;
 
