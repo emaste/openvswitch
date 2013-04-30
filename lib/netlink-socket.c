@@ -59,8 +59,7 @@ static void log_nlmsg(const char *function, int error,
 
 /* Netlink sockets. */
 
-struct nl_sock
-{
+struct nl_sock {
     int fd;
     uint32_t next_seq;
     uint32_t pid;
@@ -111,10 +110,7 @@ nl_sock_create(int protocol, struct nl_sock **sockp)
     }
 
     *sockp = NULL;
-    sock = malloc(sizeof *sock);
-    if (sock == NULL) {
-        return ENOMEM;
-    }
+    sock = xmalloc(sizeof *sock);
 
     sock->fd = socket(AF_NETLINK, SOCK_RAW, protocol);
     if (sock->fd < 0) {
