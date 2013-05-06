@@ -139,6 +139,8 @@ struct tc {
                                  * Written only by TC implementation. */
 };
 
+#define TC_INITIALIZER(TC, OPS) { OPS, HMAP_INITIALIZER(&(TC)->queues) }
+
 /* One traffic control queue.
  *
  * Each TC implementation subclasses this with whatever additional data it
@@ -311,7 +313,7 @@ static const struct tc_ops tc_ops_hfsc;
 static const struct tc_ops tc_ops_default;
 static const struct tc_ops tc_ops_other;
 
-static const struct tc_ops *tcs[] = {
+static const struct tc_ops *const tcs[] = {
     &tc_ops_htb,                /* Hierarchy token bucket (see tc-htb(8)). */
     &tc_ops_hfsc,               /* Hierarchical fair service curve. */
     &tc_ops_default,            /* Default qdisc (see tc-pfifo_fast(8)). */
@@ -1888,7 +1890,7 @@ static int
 netdev_linux_get_qos_types(const struct netdev *netdev OVS_UNUSED,
                            struct sset *types)
 {
-    const struct tc_ops **opsp;
+    const struct tc_ops *const *opsp;
 
     for (opsp = tcs; *opsp != NULL; opsp++) {
         const struct tc_ops *ops = *opsp;
@@ -1902,7 +1904,7 @@ netdev_linux_get_qos_types(const struct netdev *netdev OVS_UNUSED,
 static const struct tc_ops *
 tc_lookup_ovs_name(const char *name)
 {
-    const struct tc_ops **opsp;
+    const struct tc_ops *const *opsp;
 
     for (opsp = tcs; *opsp != NULL; opsp++) {
         const struct tc_ops *ops = *opsp;
@@ -1916,7 +1918,7 @@ tc_lookup_ovs_name(const char *name)
 static const struct tc_ops *
 tc_lookup_linux_name(const char *name)
 {
-    const struct tc_ops **opsp;
+    const struct tc_ops *const *opsp;
 
     for (opsp = tcs; *opsp != NULL; opsp++) {
         const struct tc_ops *ops = *opsp;
@@ -3603,13 +3605,11 @@ default_install__(struct netdev *netdev)
 {
     struct netdev_dev_linux *netdev_dev =
                                 netdev_dev_linux_cast(netdev_get_dev(netdev));
-    static struct tc *tc;
+    static const struct tc tc = TC_INITIALIZER(&tc, &tc_ops_default);
 
-    if (!tc) {
-        tc = xmalloc(sizeof *tc);
-        tc_init(tc, &tc_ops_default);
-    }
-    netdev_dev->tc = tc;
+    /* Nothing but a tc class implementation is allowed to write to a tc.  This
+     * class never does that, so we can legitimately use a const tc object. */
+    netdev_dev->tc = CONST_CAST(struct tc *, &tc);
 }
 
 static int
@@ -3652,13 +3652,11 @@ other_tc_load(struct netdev *netdev, struct ofpbuf *nlmsg OVS_UNUSED)
 {
     struct netdev_dev_linux *netdev_dev =
                                 netdev_dev_linux_cast(netdev_get_dev(netdev));
-    static struct tc *tc;
+    static const struct tc tc = TC_INITIALIZER(&tc, &tc_ops_other);
 
-    if (!tc) {
-        tc = xmalloc(sizeof *tc);
-        tc_init(tc, &tc_ops_other);
-    }
-    netdev_dev->tc = tc;
+    /* Nothing but a tc class implementation is allowed to write to a tc.  This
+     * class never does that, so we can legitimately use a const tc object. */
+    netdev_dev->tc = CONST_CAST(struct tc *, &tc);
     return 0;
 }
 

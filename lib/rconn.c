@@ -150,6 +150,7 @@ static void reconnect(struct rconn *);
 static void report_error(struct rconn *, int error);
 static void disconnect(struct rconn *, int error);
 static void flush_queue(struct rconn *);
+static void close_monitor(struct rconn *, size_t idx, int retval);
 static void copy_to_monitor(struct rconn *, const struct ofpbuf *);
 static bool is_connected_state(enum state);
 static bool is_admitted_msg(const struct ofpbuf *);
@@ -512,8 +513,21 @@ rconn_run(struct rconn *rc)
     if (rc->vconn) {
         vconn_run(rc->vconn);
     }
-    for (i = 0; i < rc->n_monitors; i++) {
+    for (i = 0; i < rc->n_monitors; ) {
+        struct ofpbuf *msg;
+        int retval;
+
         vconn_run(rc->monitors[i]);
+
+        /* Drain any stray message that came in on the monitor connection. */
+        retval = vconn_recv(rc->monitors[i], &msg);
+        if (!retval) {
+            ofpbuf_delete(msg);
+        } else if (retval != EAGAIN) {
+            close_monitor(rc, i, retval);
+            continue;
+        }
+        i++;
     }
 
     do {
@@ -544,6 +558,7 @@ rconn_run_wait(struct rconn *rc)
     }
     for (i = 0; i < rc->n_monitors; i++) {
         vconn_run_wait(rc->monitors[i]);
+        vconn_recv_wait(rc->monitors[i]);
     }
 
     timeo = timeout(rc);
@@ -1057,6 +1072,15 @@ state_transition(struct rconn *rc, enum state state)
 }
 
 static void
+close_monitor(struct rconn *rc, size_t idx, int retval)
+{
+    VLOG_DBG("%s: closing monitor connection to %s: %s",
+             rconn_get_name(rc), vconn_get_name(rc->monitors[idx]),
+             ovs_retval_to_string(retval));
+    rc->monitors[idx] = rc->monitors[--rc->n_monitors];
+}
+
+static void
 copy_to_monitor(struct rconn *rc, const struct ofpbuf *b)
 {
     struct ofpbuf *clone = NULL;
@@ -1073,10 +1097,7 @@ copy_to_monitor(struct rconn *rc, const struct ofpbuf *b)
         if (!retval) {
             clone = NULL;
         } else if (retval != EAGAIN) {
-            VLOG_DBG("%s: closing monitor connection to %s: %s",
-                     rconn_get_name(rc), vconn_get_name(vconn),
-                     strerror(retval));
-            rc->monitors[i] = rc->monitors[--rc->n_monitors];
+            close_monitor(rc, i, retval);
             continue;
         }
         i++;
