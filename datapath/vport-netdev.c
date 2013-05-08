@@ -117,17 +117,27 @@ static int netdev_frame_hook(struct net_bridge_port *p, struct sk_buff **pskb)
 static int netdev_init(void) { return 0; }
 static void netdev_exit(void) { }
 #else
-static int netdev_init(void)
+static int port_count;
+
+static void netdev_init(void)
 {
+	port_count++;
+	if (port_count > 1)
+		return;
+
 	/* Hook into callback used by the bridge to intercept packets.
 	 * Parasites we are. */
 	br_handle_frame_hook = netdev_frame_hook;
 
-	return 0;
+	return;
 }
 
 static void netdev_exit(void)
 {
+	port_count--;
+	if (port_count > 0)
+		return;
+
 	br_handle_frame_hook = NULL;
 }
 #endif
@@ -179,6 +189,7 @@ static struct vport *netdev_create(const struct vport_parms *parms)
 	netdev_vport->dev->priv_flags |= IFF_OVS_DATAPATH;
 	rtnl_unlock();
 
+	netdev_init();
 	return vport;
 
 #ifndef HAVE_RHEL_OVS_HOOK
@@ -212,6 +223,7 @@ static void netdev_destroy(struct vport *vport)
 {
 	struct netdev_vport *netdev_vport = netdev_vport_priv(vport);
 
+	netdev_exit();
 	rtnl_lock();
 	netdev_vport->dev->priv_flags &= ~IFF_OVS_DATAPATH;
 	netdev_rx_handler_unregister(netdev_vport->dev);
@@ -251,7 +263,7 @@ static void netdev_port_receive(struct vport *vport, struct sk_buff *skb)
 
 	vlan_copy_skb_tci(skb);
 
-	ovs_vport_receive(vport, skb);
+	ovs_vport_receive(vport, skb, NULL);
 	return;
 
 error:
@@ -291,7 +303,7 @@ static int netdev_send(struct vport *vport, struct sk_buff *skb)
 		net_warn_ratelimited("%s: dropped over-mtu packet: %d > %d\n",
 				     netdev_vport->dev->name,
 				     packet_length(skb), mtu);
-		goto error;
+		goto drop;
 	}
 
 	skb->dev = netdev_vport->dev;
@@ -312,19 +324,15 @@ static int netdev_send(struct vport *vport, struct sk_buff *skb)
 			nskb = skb_gso_segment(skb, features);
 			if (!nskb) {
 				if (unlikely(skb_cloned(skb) &&
-				    pskb_expand_head(skb, 0, 0, GFP_ATOMIC))) {
-					kfree_skb(skb);
-					return 0;
-				}
+				    pskb_expand_head(skb, 0, 0, GFP_ATOMIC)))
+					goto drop;
 
 				skb_shinfo(skb)->gso_type &= ~SKB_GSO_DODGY;
 				goto tag;
 			}
 
-			if (IS_ERR(nskb)) {
-				kfree_skb(skb);
-				return 0;
-			}
+			if (IS_ERR(nskb))
+				goto drop;
 			consume_skb(skb);
 			skb = nskb;
 
@@ -358,9 +366,8 @@ tag:
 
 	return len;
 
-error:
+drop:
 	kfree_skb(skb);
-	ovs_vport_record_error(vport, VPORT_E_TX_DROPPED);
 	return 0;
 }
 
@@ -388,9 +395,6 @@ struct vport *ovs_netdev_get_vport(struct net_device *dev)
 
 const struct vport_ops ovs_netdev_vport_ops = {
 	.type		= OVS_VPORT_TYPE_NETDEV,
-	.flags          = VPORT_F_REQUIRED,
-	.init		= netdev_init,
-	.exit		= netdev_exit,
 	.create		= netdev_create,
 	.destroy	= netdev_destroy,
 	.get_name	= ovs_netdev_get_name,

@@ -36,7 +36,7 @@
 
 /* List of statically compiled vport implementations.  Don't forget to also
  * add yours to the list at the bottom of vport.h. */
-static const struct vport_ops *base_vport_ops_list[] = {
+static const struct vport_ops *vport_ops_list[] = {
 	&ovs_netdev_vport_ops,
 	&ovs_internal_vport_ops,
 	&ovs_gre_vport_ops,
@@ -47,9 +47,6 @@ static const struct vport_ops *base_vport_ops_list[] = {
 #endif
 };
 
-static const struct vport_ops **vport_ops_list;
-static int n_vport_types;
-
 /* Protected by RCU read lock for reading, ovs_mutex for writing. */
 static struct hlist_head *dev_table;
 #define VPORT_HASH_BUCKETS 1024
@@ -57,68 +54,25 @@ static struct hlist_head *dev_table;
 /**
  *	ovs_vport_init - initialize vport subsystem
  *
- * Called at module load time to initialize the vport subsystem and any
- * compiled in vport types.
+ * Called at module load time to initialize the vport subsystem.
  */
 int ovs_vport_init(void)
 {
-	int err;
-	int i;
-
 	dev_table = kzalloc(VPORT_HASH_BUCKETS * sizeof(struct hlist_head),
 			    GFP_KERNEL);
-	if (!dev_table) {
-		err = -ENOMEM;
-		goto error;
-	}
-
-	vport_ops_list = kmalloc(ARRAY_SIZE(base_vport_ops_list) *
-				 sizeof(struct vport_ops *), GFP_KERNEL);
-	if (!vport_ops_list) {
-		err = -ENOMEM;
-		goto error_dev_table;
-	}
-
-	for (i = 0; i < ARRAY_SIZE(base_vport_ops_list); i++) {
-		const struct vport_ops *new_ops = base_vport_ops_list[i];
-
-		if (new_ops->init)
-			err = new_ops->init();
-		else
-			err = 0;
-
-		if (!err)
-			vport_ops_list[n_vport_types++] = new_ops;
-		else if (new_ops->flags & VPORT_F_REQUIRED) {
-			ovs_vport_exit();
-			goto error;
-		}
-	}
+	if (!dev_table)
+		return -ENOMEM;
 
 	return 0;
-
-error_dev_table:
-	kfree(dev_table);
-error:
-	return err;
 }
 
 /**
  *	ovs_vport_exit - shutdown vport subsystem
  *
- * Called at module exit time to shutdown the vport subsystem and any
- * initialized vport types.
+ * Called at module exit time to shutdown the vport subsystem.
  */
 void ovs_vport_exit(void)
 {
-	int i;
-
-	for (i = 0; i < n_vport_types; i++) {
-		if (vport_ops_list[i]->exit)
-			vport_ops_list[i]->exit();
-	}
-
-	kfree(vport_ops_list);
 	kfree(dev_table);
 }
 
@@ -222,7 +176,7 @@ struct vport *ovs_vport_add(const struct vport_parms *parms)
 	int err = 0;
 	int i;
 
-	for (i = 0; i < n_vport_types; i++) {
+	for (i = 0; i < ARRAY_SIZE(vport_ops_list); i++) {
 		if (vport_ops_list[i]->type == parms->type) {
 			struct hlist_head *bucket;
 
@@ -400,7 +354,8 @@ int ovs_vport_get_options(const struct vport *vport, struct sk_buff *skb)
  * skb->data should point to the Ethernet header.  The caller must have already
  * called compute_ip_summed() to initialize the checksumming fields.
  */
-void ovs_vport_receive(struct vport *vport, struct sk_buff *skb)
+void ovs_vport_receive(struct vport *vport, struct sk_buff *skb,
+		       struct ovs_key_ipv4_tunnel *tun_key)
 {
 	struct pcpu_tstats *stats;
 
@@ -410,9 +365,7 @@ void ovs_vport_receive(struct vport *vport, struct sk_buff *skb)
 	stats->rx_bytes += skb->len;
 	u64_stats_update_end(&stats->syncp);
 
-	if (!(vport->ops->flags & VPORT_F_TUN_ID))
-		OVS_CB(skb)->tun_key = NULL;
-
+	OVS_CB(skb)->tun_key = tun_key;
 	ovs_dp_process_received_packet(vport, skb);
 }
 
@@ -438,7 +391,12 @@ int ovs_vport_send(struct vport *vport, struct sk_buff *skb)
 		stats->tx_packets++;
 		stats->tx_bytes += sent;
 		u64_stats_update_end(&stats->syncp);
-	}
+	} else if (sent < 0) {
+		ovs_vport_record_error(vport, VPORT_E_TX_ERROR);
+		kfree_skb(skb);
+	} else
+		ovs_vport_record_error(vport, VPORT_E_TX_DROPPED);
+
 	return sent;
 }
 
@@ -474,4 +432,19 @@ void ovs_vport_record_error(struct vport *vport, enum vport_err_type err_type)
 	}
 
 	spin_unlock(&vport->stats_lock);
+}
+
+static void free_vport_rcu(struct rcu_head *rcu)
+{
+	struct vport *vport = container_of(rcu, struct vport, rcu);
+
+	ovs_vport_free(vport);
+}
+
+void ovs_vport_deferred_free(struct vport *vport)
+{
+	if (!vport)
+		return;
+
+	call_rcu(&vport->rcu, free_vport_rcu);
 }
