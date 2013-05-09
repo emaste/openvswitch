@@ -590,7 +590,6 @@ static uint16_t odp_port_to_ofp_port(const struct ofproto_dpif *,
 static struct ofport_dpif *
 ofport_dpif_cast(const struct ofport *ofport)
 {
-    ovs_assert(ofport->ofproto->ofproto_class == &ofproto_dpif_class);
     return ofport ? CONTAINER_OF(ofport, struct ofport_dpif, up) : NULL;
 }
 
@@ -3375,23 +3374,6 @@ port_get_stats(const struct ofport *ofport_, struct netdev_stats *stats)
     return error;
 }
 
-/* Account packets for LOCAL port. */
-static void
-ofproto_update_local_port_stats(const struct ofproto *ofproto_,
-                                size_t tx_size, size_t rx_size)
-{
-    struct ofproto_dpif *ofproto = ofproto_dpif_cast(ofproto_);
-
-    if (rx_size) {
-        ofproto->stats.rx_packets++;
-        ofproto->stats.rx_bytes += rx_size;
-    }
-    if (tx_size) {
-        ofproto->stats.tx_packets++;
-        ofproto->stats.tx_bytes += tx_size;
-    }
-}
-
 struct port_dump_state {
     uint32_t bucket;
     uint32_t offset;
@@ -3922,50 +3904,41 @@ ofproto_receive(const struct dpif_backer *backer, struct ofpbuf *packet,
         *odp_in_port = flow->in_port;
     }
 
-    if (tnl_port_should_receive(flow)) {
-        const struct ofport *ofport = tnl_port_receive(flow);
-        if (!ofport) {
-            flow->in_port = OFPP_NONE;
-            goto exit;
-        }
-        port = ofport_dpif_cast(ofport);
+    port = (tnl_port_should_receive(flow)
+            ? ofport_dpif_cast(tnl_port_receive(flow))
+            : odp_port_to_ofport(backer, flow->in_port));
+    flow->in_port = port ? port->up.ofp_port : OFPP_NONE;
+    if (!port) {
+        goto exit;
+    }
 
-        /* XXX: Since the tunnel module is not scoped per backer, it's
-         * theoretically possible that we'll receive an ofport belonging to an
-         * entirely different datapath.  In practice, this can't happen because
-         * no platforms has two separate datapaths which each support
-         * tunneling. */
-        ovs_assert(ofproto_dpif_cast(port->up.ofproto)->backer == backer);
-    } else {
-        port = odp_port_to_ofport(backer, flow->in_port);
-        if (!port) {
-            flow->in_port = OFPP_NONE;
-            goto exit;
-        }
+    /* XXX: Since the tunnel module is not scoped per backer, for a tunnel port
+     * it's theoretically possible that we'll receive an ofport belonging to an
+     * entirely different datapath.  In practice, this can't happen because no
+     * platforms has two separate datapaths which each support tunneling. */
+    ovs_assert(ofproto_dpif_cast(port->up.ofproto)->backer == backer);
 
-        flow->in_port = port->up.ofp_port;
-        if (vsp_adjust_flow(ofproto_dpif_cast(port->up.ofproto), flow)) {
-            if (packet) {
-                /* Make the packet resemble the flow, so that it gets sent to
-                 * an OpenFlow controller properly, so that it looks correct
-                 * for sFlow, and so that flow_extract() will get the correct
-                 * vlan_tci if it is called on 'packet'.
-                 *
-                 * The allocated space inside 'packet' probably also contains
-                 * 'key', that is, both 'packet' and 'key' are probably part of
-                 * a struct dpif_upcall (see the large comment on that
-                 * structure definition), so pushing data on 'packet' is in
-                 * general not a good idea since it could overwrite 'key' or
-                 * free it as a side effect.  However, it's OK in this special
-                 * case because we know that 'packet' is inside a Netlink
-                 * attribute: pushing 4 bytes will just overwrite the 4-byte
-                 * "struct nlattr", which is fine since we don't need that
-                 * header anymore. */
-                eth_push_vlan(packet, flow->vlan_tci);
-            }
-            /* We can't reproduce 'key' from 'flow'. */
-            fitness = fitness == ODP_FIT_PERFECT ? ODP_FIT_TOO_MUCH : fitness;
+    if (vsp_adjust_flow(ofproto_dpif_cast(port->up.ofproto), flow)) {
+        if (packet) {
+            /* Make the packet resemble the flow, so that it gets sent to
+             * an OpenFlow controller properly, so that it looks correct
+             * for sFlow, and so that flow_extract() will get the correct
+             * vlan_tci if it is called on 'packet'.
+             *
+             * The allocated space inside 'packet' probably also contains
+             * 'key', that is, both 'packet' and 'key' are probably part of
+             * a struct dpif_upcall (see the large comment on that
+             * structure definition), so pushing data on 'packet' is in
+             * general not a good idea since it could overwrite 'key' or
+             * free it as a side effect.  However, it's OK in this special
+             * case because we know that 'packet' is inside a Netlink
+             * attribute: pushing 4 bytes will just overwrite the 4-byte
+             * "struct nlattr", which is fine since we don't need that
+             * header anymore. */
+            eth_push_vlan(packet, flow->vlan_tci);
         }
+        /* We can't reproduce 'key' from 'flow'. */
+        fitness = fitness == ODP_FIT_PERFECT ? ODP_FIT_TOO_MUCH : fitness;
     }
     error = 0;
 
@@ -4861,9 +4834,6 @@ facet_flush_stats(struct facet *facet)
         netflow_expire(ofproto->netflow, &facet->nf_flow, &expired);
     }
 
-    facet->rule->packet_count += facet->packet_count;
-    facet->rule->byte_count += facet->byte_count;
-
     /* Reset counters to prevent double counting if 'facet' ever gets
      * reinstalled. */
     facet_reset_counters(facet);
@@ -5245,6 +5215,7 @@ facet_push_stats(struct facet *facet)
         facet->prev_byte_count = facet->byte_count;
         facet->prev_used = facet->used;
 
+        rule_credit_stats(facet->rule, &stats);
         flow_push_stats(facet, &stats);
 
         update_mirror_stats(ofproto_dpif_cast(facet->rule->up.ofproto),
@@ -5762,7 +5733,6 @@ static void
 rule_get_stats(struct rule *rule_, uint64_t *packets, uint64_t *bytes)
 {
     struct rule_dpif *rule = rule_dpif_cast(rule_);
-    struct facet *facet;
 
     /* push_all_stats() can handle flow misses which, when using the learn
      * action, can cause rules to be added and deleted.  This can corrupt our
@@ -5774,14 +5744,6 @@ rule_get_stats(struct rule *rule_, uint64_t *packets, uint64_t *bytes)
      * in facets.  This counts, for example, facets that have expired. */
     *packets = rule->packet_count;
     *bytes = rule->byte_count;
-
-    /* Add any statistics that are tracked by facets.  This includes
-     * statistical data recently updated by ofproto_update_stats() as well as
-     * stats for packets that were executed "by hand" via dpif_execute(). */
-    LIST_FOR_EACH (facet, list_node, &rule->facets) {
-        *packets += facet->packet_count;
-        *bytes += facet->byte_count;
-    }
 }
 
 static void
@@ -5834,69 +5796,33 @@ rule_modify_actions(struct rule *rule_)
 static int
 send_packet(const struct ofport_dpif *ofport, struct ofpbuf *packet)
 {
-    const struct ofproto_dpif *ofproto = ofproto_dpif_cast(ofport->up.ofproto);
+    struct ofproto_dpif *ofproto = ofproto_dpif_cast(ofport->up.ofproto);
     uint64_t odp_actions_stub[1024 / 8];
     struct ofpbuf key, odp_actions;
+    struct dpif_flow_stats stats;
     struct odputil_keybuf keybuf;
-    uint32_t odp_port;
+    struct ofpact_output output;
+    struct action_xlate_ctx ctx;
     struct flow flow;
     int error;
 
-    flow_extract(packet, 0, 0, NULL, OFPP_LOCAL, &flow);
-    if (netdev_vport_is_patch(ofport->up.netdev)) {
-        struct ofproto_dpif *peer_ofproto;
-        struct dpif_flow_stats stats;
-        struct ofport_dpif *peer;
-        struct rule_dpif *rule;
-
-        peer = ofport_get_peer(ofport);
-        if (!peer) {
-            return ENODEV;
-        }
-
-        dpif_flow_stats_extract(&flow, packet, time_msec(), &stats);
-        netdev_vport_inc_tx(ofport->up.netdev, &stats);
-        netdev_vport_inc_rx(peer->up.netdev, &stats);
-
-        flow.in_port = peer->up.ofp_port;
-        peer_ofproto = ofproto_dpif_cast(peer->up.ofproto);
-        rule = rule_dpif_lookup(peer_ofproto, &flow);
-        rule_dpif_execute(rule, &flow, packet);
-
-        return 0;
-    }
-
     ofpbuf_use_stub(&odp_actions, odp_actions_stub, sizeof odp_actions_stub);
-
-    if (ofport->tnl_port) {
-        struct dpif_flow_stats stats;
-
-        odp_port = tnl_port_send(ofport->tnl_port, &flow);
-        if (odp_port == OVSP_NONE) {
-            return ENODEV;
-        }
-
-        dpif_flow_stats_extract(&flow, packet, time_msec(), &stats);
-        netdev_vport_inc_tx(ofport->up.netdev, &stats);
-        odp_put_tunnel_action(&flow.tunnel, &odp_actions);
-        odp_put_skb_mark_action(flow.skb_mark, &odp_actions);
-    } else {
-        odp_port = vsp_realdev_to_vlandev(ofproto, ofport->odp_port,
-                                          flow.vlan_tci);
-        if (odp_port != ofport->odp_port) {
-            eth_pop_vlan(packet);
-            flow.vlan_tci = htons(0);
-        }
-    }
-
     ofpbuf_use_stack(&key, &keybuf, sizeof keybuf);
-    odp_flow_key_from_flow(&key, &flow,
-                           ofp_port_to_odp_port(ofproto, flow.in_port));
 
-    compose_sflow_action(ofproto, &odp_actions, &flow, odp_port);
-    compose_ipfix_action(ofproto, &odp_actions, &flow);
+    /* Use OFPP_NONE as the in_port to avoid special packet processing. */
+    flow_extract(packet, 0, 0, NULL, OFPP_NONE, &flow);
+    odp_flow_key_from_flow(&key, &flow, ofp_port_to_odp_port(ofproto,
+                                                             OFPP_LOCAL));
+    dpif_flow_stats_extract(&flow, packet, time_msec(), &stats);
 
-    nl_msg_put_u32(&odp_actions, OVS_ACTION_ATTR_OUTPUT, odp_port);
+    ofpact_init(&output.ofpact, OFPACT_OUTPUT, sizeof output);
+    output.port = ofport->up.ofp_port;
+    output.max_len = 0;
+
+    action_xlate_ctx_init(&ctx, ofproto, &flow, NULL, NULL, 0, packet);
+    ctx.resubmit_stats = &stats;
+    xlate_actions(&ctx, &output.ofpact, sizeof output, &odp_actions);
+
     error = dpif_execute(ofproto->backer->dpif,
                          key.data, key.size,
                          odp_actions.data, odp_actions.size,
@@ -5904,10 +5830,13 @@ send_packet(const struct ofport_dpif *ofport, struct ofpbuf *packet)
     ofpbuf_uninit(&odp_actions);
 
     if (error) {
-        VLOG_WARN_RL(&rl, "%s: failed to send packet on port %"PRIu32" (%s)",
-                     ofproto->up.name, odp_port, strerror(error));
+        VLOG_WARN_RL(&rl, "%s: failed to send packet on port %s (%s)",
+                     ofproto->up.name, netdev_get_name(ofport->up.netdev),
+                     strerror(error));
     }
-    ofproto_update_local_port_stats(ofport->up.ofproto, packet->size, 0);
+
+    ofproto->stats.tx_packets++;
+    ofproto->stats.tx_bytes += packet->size;
     return error;
 }
 
@@ -7096,7 +7025,6 @@ action_xlate_ctx_init(struct action_xlate_ctx *ctx,
     ctx->flow = *flow;
     ctx->base_flow = ctx->flow;
     memset(&ctx->base_flow.tunnel, 0, sizeof ctx->base_flow.tunnel);
-    ctx->base_flow.vlan_tci = initial_vals->vlan_tci;
     ctx->rule = rule;
     ctx->packet = packet;
     ctx->may_learn = packet != NULL;
@@ -7104,6 +7032,10 @@ action_xlate_ctx_init(struct action_xlate_ctx *ctx,
     ctx->resubmit_hook = NULL;
     ctx->report_hook = NULL;
     ctx->resubmit_stats = NULL;
+
+    if (initial_vals) {
+        ctx->base_flow.vlan_tci = initial_vals->vlan_tci;
+    }
 }
 
 /* Translates the 'ofpacts_len' bytes of "struct ofpacts" starting at 'ofpacts'
