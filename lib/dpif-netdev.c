@@ -180,6 +180,7 @@ struct dp_netdev_port {
     int port_no;                /* Index into dp_netdev's 'ports'. */
     struct list node;           /* Element in dp_netdev's 'port_list'. */
     struct netdev *netdev;
+    struct netdev_saved_flags *sf;
     char *type;                 /* Port type as requested by user. */
 #ifdef THREADED
     struct pollfd *poll_fd;     /* To manage the poll loop in the thread. */
@@ -583,6 +584,7 @@ static int
 do_add_port(struct dp_netdev *dp, const char *devname, const char *type,
             uint32_t port_no)
 {
+    struct netdev_saved_flags *sf;
     struct dp_netdev_port *port;
     struct netdev *netdev;
     const char *open_type;
@@ -609,7 +611,7 @@ do_add_port(struct dp_netdev *dp, const char *devname, const char *type,
         return error;
     }
 
-    error = netdev_turn_flags_on(netdev, NETDEV_PROMISC, false);
+    error = netdev_turn_flags_on(netdev, NETDEV_PROMISC, &sf);
     if (error) {
         netdev_close(netdev);
         return error;
@@ -618,6 +620,7 @@ do_add_port(struct dp_netdev *dp, const char *devname, const char *type,
     port = xmalloc(sizeof *port);
     port->port_no = port_no;
     port->netdev = netdev;
+    port->sf = sf;
     port->type = xstrdup(type);
 #ifdef THREADED
     port->poll_fd = NULL;
@@ -732,6 +735,7 @@ do_del_port(struct dp_netdev *dp, uint32_t port_no)
     dp->serial++;
 
     netdev_close(port->netdev);
+    netdev_restore_flags(port->sf);
     free(port->type);
     free(port);
 
