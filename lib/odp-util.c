@@ -170,26 +170,35 @@ format_odp_sample_action(struct ds *ds, const struct nlattr *attr)
 }
 
 static const char *
-slow_path_reason_to_string(uint32_t data)
+slow_path_reason_to_string(enum slow_path_reason reason)
 {
-    enum slow_path_reason bit = (enum slow_path_reason) data;
-
-    switch (bit) {
+    switch (reason) {
     case SLOW_CFM:
         return "cfm";
     case SLOW_LACP:
         return "lacp";
     case SLOW_STP:
         return "stp";
-    case SLOW_IN_BAND:
-        return "in_band";
     case SLOW_CONTROLLER:
         return "controller";
-    case SLOW_MATCH:
-        return "match";
+    case __SLOW_MAX:
     default:
         return NULL;
     }
+}
+
+static enum slow_path_reason
+string_to_slow_path_reason(const char *string)
+{
+    enum slow_path_reason i;
+
+    for (i = 1; i < __SLOW_MAX; i++) {
+        if (!strcmp(string, slow_path_reason_to_string(i))) {
+            return i;
+        }
+    }
+
+    return 0;
 }
 
 static int
@@ -286,10 +295,10 @@ format_odp_userspace_action(struct ds *ds, const struct nlattr *attr)
                               cookie.sflow.output);
             } else if (userdata_len == sizeof cookie.slow_path
                        && cookie.type == USER_ACTION_COOKIE_SLOW_PATH) {
-                ds_put_cstr(ds, ",slow_path(");
-                format_flags(ds, slow_path_reason_to_string,
-                             cookie.slow_path.reason, ',');
-                ds_put_format(ds, ")");
+                const char *reason;
+                reason = slow_path_reason_to_string(cookie.slow_path.reason);
+                reason = reason ? reason : "";
+                ds_put_format(ds, ",slow_path(%s)", reason);
             } else if (userdata_len == sizeof cookie.flow_sample
                        && cookie.type == USER_ACTION_COOKIE_FLOW_SAMPLE) {
                 ds_put_format(ds, ",flow_sample(probability=%"PRIu16
@@ -500,25 +509,27 @@ parse_odp_action(const char *s, const struct simap *port_names,
             odp_put_userspace_action(pid, &cookie, sizeof cookie.sflow,
                                      actions);
             return n;
-        } else if (sscanf(s, "userspace(pid=%lli,slow_path%n", &pid, &n) > 0
+        } else if (sscanf(s, "userspace(pid=%lli,slow_path(%n", &pid, &n) > 0
                    && n > 0) {
             union user_action_cookie cookie;
-            int res;
+            char reason[32];
+
+            if (s[n] == ')' && s[n + 1] == ')') {
+                reason[0] = '\0';
+                n += 2;
+            } else if (sscanf(s + n, "%31[^)]))", reason) > 0) {
+                n += strlen(reason) + 2;
+            } else {
+                return -EINVAL;
+            }
 
             cookie.type = USER_ACTION_COOKIE_SLOW_PATH;
             cookie.slow_path.unused = 0;
-            cookie.slow_path.reason = 0;
+            cookie.slow_path.reason = string_to_slow_path_reason(reason);
 
-            res = parse_flags(&s[n], slow_path_reason_to_string,
-                              &cookie.slow_path.reason);
-            if (res < 0) {
-                return res;
-            }
-            n += res;
-            if (s[n] != ')') {
+            if (reason[0] && !cookie.slow_path.reason) {
                 return -EINVAL;
             }
-            n++;
 
             odp_put_userspace_action(pid, &cookie, sizeof cookie.slow_path,
                                      actions);
